@@ -1,8 +1,5 @@
 // UWB 16bit ショートアドレスの保存 (NVS) と、シリアルからの設定 UI。
-//
-// タグ側スケッチと同じ内容のファイルを両プロジェクトに置いている。両者は別
-// PlatformIO プロジェクトで、initUwb() や errorShortName() も既に重複させて
-// いるため、共有ライブラリ化はせず手でコピーを合わせる。
+// ANCHOR (main_anchor.cpp) と TAG (main_tag.cpp) の両方から使う共通ヘッダ。
 #pragma once
 
 #include <Arduino.h>
