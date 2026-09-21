@@ -9,7 +9,7 @@ M5Stamp_UWBDSRangeConfig rangeConfig;
 
 bool initUwb(uint32_t spiFastHz)
 {
-    // Stamp-UWB connections to the QM33120 UWB transceiver.
+    // Stamp-UWB から QM33120 UWB トランシーバーへの接続設定。
     M5Stamp_UWBConfig config;
     config.pin_gp7    = M5STAMP_UWB_PIN_UNUSED;
     config.pin_wakeup = M5STAMP_UWB_PIN_UNUSED;
@@ -19,16 +19,16 @@ bool initUwb(uint32_t spiFastHz)
     config.pin_mosi   = UWB_PIN_MOSI;
     config.pin_sck    = UWB_PIN_SCK;
     config.pin_cs     = UWB_PIN_CS;
-    // Keep spi_slow_hz at the library default (2MHz): probing and the reset
-    // sequence run before the chip's clock PLL is up, where only slow SPI is
-    // guaranteed. Only the post-init rate is raised here.
+    // spi_slow_hz はライブラリ既定値 (2MHz) のままにする: プローブとリセット
+    // シーケンスはチップのクロック PLL が上がる前に走り、そこでは低速 SPI しか
+    // 保証されない。ここで上げるのは初期化後のレートだけ。
     config.spi_fast_hz = spiFastHz;
 
     M5Stamp_UWBPHYConfig phy;
-    // Channel 9 is the only UWB channel permitted in Japan; both sides must match.
+    // チャンネル 9 は日本で許可されている唯一の UWB チャンネル。両側で一致させる。
     phy.channel = M5Stamp_UWBChannel::Channel9;
 
-    // Both devices must use the same PAN and DS-TWR timing. initiatorAddress /
+    // 両機とも同じ PAN と DS-TWR タイミングを使う必要がある。initiatorAddress /
     // responderAddress は呼び出し側 (ANCHOR/TAG それぞれの setup()) が
     // initUwb() を呼ぶ前に設定済みという前提。
     rangeConfig.panId                          = 0xDECA;
@@ -55,10 +55,10 @@ bool initUwb(uint32_t spiFastHz)
         return false;
     }
 
-    // deviceId() is the value cached while probing, when the bus still ran at
-    // spi_slow_hz. The driver switched to spi_fast_hz inside begin(), so read
-    // the register once more: a corrupt readback means this wiring cannot hold
-    // the requested rate, and every later transfer would be silently unreliable.
+    // deviceId() はプローブ中、バスがまだ spi_slow_hz で動いていたときに
+    // キャッシュした値。begin() 内でドライバは spi_fast_hz に切り替わったので、
+    // レジスタをもう一度読む: この読み戻しが壊れていれば、この配線は要求レート
+    // を維持できず、以降のすべての転送が見えないまま不安定になる。
     const uint32_t fastId = uwb.readRawDeviceId();
     if (fastId != M5STAMP_UWB_QM33120_DEVICE_ID) {
         Serial.printf("UWB_SPI,result=FAIL,fast_hz=%lu,dev_id=0x%08lX\n", static_cast<unsigned long>(spiFastHz),

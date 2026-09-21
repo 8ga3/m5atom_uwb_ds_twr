@@ -15,27 +15,26 @@ extern bool uwbReady;
 extern uint16_t idRangeMin;
 extern uint16_t idRangeMax;
 
-// Ok: a distance was measured. Waiting: nothing arrived in time, which is
-// normal while idle. Fail: the exchange started but broke down.
+// Ok: 距離を測定できた。Waiting: 時間内に何も届かなかった状態で、無通信中は
+// 正常。Fail: 交信は始まったが途中で破綻した。
 enum class DisplayState { Init, Ok, Waiting, Fail };
 
 // M5.begin() の後に呼び、hasDisplay/hasLed を確定させて必要な方を初期化する。
 void initStatusHardware();
 
-// The 128x128 display fits about 10 characters per line at text size 2, so the
-// library error names are far too long to print as-is.
+// 128x128 の画面はテキストサイズ 2 だと 1 行 10 文字程度しか入らないため、
+// ライブラリのエラー名はそのまま出すには長すぎる。
 const char* errorShortName(M5Stamp_UWBError error);
 
 uint16_t stateColor(DisplayState state);
 
-// Repeated writes each drive an RMT frame, so only push the LED when the
-// color actually changes.
+// 書き込みのたびに RMT フレームが 1 回動くので、色が実際に変わったときだけ
+// LED へ反映する。
 void setLed(uint8_t red, uint8_t green, uint8_t blue);
 
-// On the screenless Lite boards the whole status is carried by the single RGB
-// LED: RED = the UWB transceiver is unavailable, YELLOW = idle/waiting,
-// GREEN = actively exchanging distances, MAGENTA = waiting for an ID on the
-// serial console (showIdSetup() が直接光らせる)。
+// 画面のない Lite 系では状態のすべてを RGB LED 1 つで表す: RED = UWB
+// トランシーバーが使えない、YELLOW = 無通信で待機中、GREEN = 測距交信中、
+// MAGENTA = シリアルコンソールでの ID 入力待ち (showIdSetup() が直接光らせる)。
 void updateLed(DisplayState state);
 
 // ID 設定モードの表示。マゼンタは他のどの状態でも使わないので、画面のない

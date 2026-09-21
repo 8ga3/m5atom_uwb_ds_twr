@@ -26,21 +26,21 @@ void beginHost()
 void beginSerial(const char* role)
 {
 #if !defined(CONFIG_IDF_TARGET_ESP32S3)
-    // The classic ESP32 build logs over UART0, and arduino-esp32 leaves that
-    // port without a TX ring buffer: anything longer than the 128-byte hardware
-    // FIFO blocks the caller until the FIFO drains, which is about 10ms for the
-    // stat line at 115200. The radio only listens while ranging, so such a
-    // stall is dead air on the air interface - harmless at the current 5Hz,
-    // but a fifth of the budget once the exchange rate goes up. A TX ring
-    // buffer turns Serial.printf back into a memcpy. The size can only be set
-    // while the driver is down, hence end() first (a no-op before the first
-    // begin()). The ESP32-S3 build uses USB-Serial/JTAG, which already has a
-    // 256-byte ring buffer and never blocks like this.
+    // 旧世代 ESP32 ビルドは UART0 でログ出力し、arduino-esp32 はこのポートに
+    // TX リングバッファを用意しない。128 バイトのハードウェア FIFO を超える
+    // 出力は、FIFO が空くまで呼び出し元をブロックする。115200bps では統計行
+    // 1 本で約 10ms かかる計算。無線は測距中しか受信しないので、このブロックは
+    // 空中線上では単なる無通信区間となり、現状の 5Hz では実害はないが、交信
+    // 頻度を上げると予算の 5 分の 1 を占めるようになる。TX リングバッファを
+    // 用意すれば Serial.printf は memcpy 相当に戻る。バッファサイズはドライバ
+    // 停止中しか設定できないため、先に end() する (初回 begin() 前は no-op)。
+    // ESP32-S3 ビルドは USB-Serial/JTAG を使い、既に 256 バイトのリングバッファ
+    // を持つのでこのブロックは発生しない。
     Serial.end();
     Serial.setTxBufferSize(512);
 #endif
     Serial.begin(115200);
-    // USB CDC drops output until the host opens the port; wait briefly for it.
+    // USB CDC はホストがポートを開くまで出力を捨てるので、少し待つ。
     const uint32_t serialWaitStart = millis();
     while (!Serial && (millis() - serialWaitStart) < 3000) {
         delay(10);

@@ -18,10 +18,10 @@ uint32_t lastLedColor = UINT32_MAX;
 
 void initStatusHardware()
 {
-    // AtomS3 has an LCD and no RGB LED; the Lite variants have the RGB LED and
-    // no LCD. Probe for the panel after M5.begin() so one sketch serves either
-    // board. getDisplayCount() is the safe test - M5.Display.width()
-    // dereferences a null panel when no display was detected.
+    // AtomS3 は LCD 搭載で RGB LED はなく、Lite 系は RGB LED 搭載で LCD はない。
+    // どちらの基板でも同じスケッチで動かせるよう、M5.begin() の後にパネルの
+    // 有無を調べる。getDisplayCount() は安全な判定方法 - 画面が検出されて
+    // いないとき M5.Display.width() はヌルパネルを参照してしまう。
     hasDisplay = (M5.getDisplayCount() > 0);
     if (hasDisplay) {
         M5.Display.setTextSize(2);

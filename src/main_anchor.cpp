@@ -1,4 +1,4 @@
-// M5Atom S3 / AtomS3 Lite / Atom Lite UWB DS-TWR ANCHOR example code
+// M5Atom S3 / AtomS3 Lite / Atom Lite 用 UWB DS-TWR ANCHOR サンプルコード
 
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
@@ -10,9 +10,9 @@
 #include "device_id.h"
 
 static constexpr uint32_t LOG_INTERVAL = 20;
-// The tag ranges every 200ms while our receive window is only 100ms, so quiet
-// gaps between exchanges are normal. Hold the last result on screen this long
-// before admitting the tag is actually gone.
+// タグ側の測距周期は 200ms、受信ウィンドウは 100ms しかないため、交信の間に無通信の
+// 間隔ができるのは正常。タグが本当にいなくなったと判断するまで、最後の結果を
+// この時間だけ画面に残す。
 static constexpr uint32_t IDLE_GRACE_MS = 1000;
 
 // 自機のアンカー ID (= responderAddress)。NVS から読むか起動時に設定する。
@@ -22,14 +22,14 @@ uint32_t failCount     = 0;
 uint32_t noPollCount   = 0;
 uint32_t noFinalCount  = 0;
 
-// Only Poll frames that actually reached us count as attempts; a silent tag
-// (NO POLL) would otherwise inflate the denominator forever.
+// 実際に届いた Poll フレームだけを試行回数として数える。無音のタグ (NO POLL) まで
+// 数えると、分母が際限なく膨らんでしまう。
 static uint32_t attemptCount()
 {
     return responseCount + failCount + noFinalCount;
 }
 
-// Same six-line layout as the tag sketch, with the state carried in the color.
+// タグ側スケッチと同じ 6 行レイアウト。状態は文字色で表す。
 static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs, uint16_t requester,
                          const char* errorText)
 {
@@ -73,27 +73,27 @@ uint32_t lastSuccessMs        = 0;
 
 static void runResponder()
 {
-    // Wait for a Poll/Final exchange and return the DS-TWR distance result.
+    // Poll/Final の交信を待ち、DS-TWR の測距結果を返す。
     const M5Stamp_UWBDSResponderResult result = uwb.respondDSRange(rangeConfig);
     if (!result.success) {
-        // Idle receive timeouts are expected and are not counted as failures.
+        // 無通信による受信タイムアウトは想定内であり、失敗とはカウントしない。
         if (result.error == M5Stamp_UWBError::RxTimeout) {
-            // requester stays 0 when no Poll was received at all; a non-zero value
-            // means the Poll/Response exchange started but the Final frame was lost.
+            // Poll が全く受信できなかった場合 requester は 0 のまま。0 以外の値なら
+            // Poll/Response の交信は始まったが Final フレームが届かなかったことを示す。
             const bool noPoll = (result.requester == 0);
             noPoll ? ++noPollCount : ++noFinalCount;
 
             if (noPoll) {
-                // Normal idle gap: stay quiet and keep the last reading visible.
+                // 通常の無通信区間なので何もせず、最後の測距結果を画面に残す。
                 if ((millis() - lastSuccessMs) < IDLE_GRACE_MS) return;
             } else if (noFinalCount % LOG_INTERVAL == 0) {
-                // A lost Final frame is a real anomaly, so keep a sparse trace of it.
+                // Final フレームの欠落は本当の異常なので、間引いて記録しておく。
                 Serial.printf("DS_RESP_NO_FINAL,requester=0x%X,seq=%u,elapsed_ms=%lu,no_final=%lu\n", result.requester,
                               result.sequence, static_cast<unsigned long>(result.elapsedMs),
                               static_cast<unsigned long>(noFinalCount));
             }
 
-            // Redraw only on state change to avoid flicker.
+            // ちらつきを避けるため、状態が変わったときだけ再描画する。
             if (lastDisplayState != DisplayState::Waiting || lastWaitingWasNoPoll != noPoll) {
                 updateStatus(DisplayState::Waiting, 0.0f, result.elapsedMs, result.requester,
                              noPoll ? "NOPOLL" : "NOFIN");
@@ -119,7 +119,7 @@ static void runResponder()
     updateStatus(DisplayState::Ok, result.distanceM, result.elapsedMs, result.requester, nullptr);
     lastDisplayState = DisplayState::Ok;
 
-    // Print accumulated statistics every LOG_INTERVAL responses.
+    // LOG_INTERVAL 回応答するごとに累積統計を出力する。
     if (responseCount % LOG_INTERVAL == 0) {
         Serial.printf(
             "DS_RESP_STAT,count=%lu,fail=%lu,no_poll=%lu,no_final=%lu,last=OK,seq=%u,requester=0x%X,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu\n",
@@ -144,17 +144,16 @@ void setup()
 
     // 応答側は受信フレームの src を見ておらず (dst と panId のみ照合)、応答は
     // 常に Poll の送信元へ返す。したがってタグ側の ID を知る必要はなく、この
-    // フィールドは responder では未使用。responderAddress はこのアンカーの
-    // 自機 ID: respondDSRange() drops every frame whose dst differs, which is
-    // what keeps the tag's sweep from being answered by more than one anchor
-    // at a time.
+    // フィールドは responder では未使用。responderAddress はこのアンカーの自機 ID
+    // であり、respondDSRange() は dst が一致しないフレームをすべて捨てる。これに
+    // よって、タグが順に呼びかけていく中で複数アンカーが同時に応答しないようになる。
     rangeConfig.initiatorAddress = 0x0000;
     rangeConfig.responderAddress = anchorId;
 
     uwbReady = initUwb(UWB_SPI_FAST_HZ);
     if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
-        // The link either never came up or failed the fast-rate readback. Retry
-        // once at the library default so a marginal board still ranges.
+        // リンクが上がらなかったか、高速レートでの読み戻しに失敗した。ライブラリ
+        // 既定のクロックで 1 回だけ再試行し、際 (きわ) の基板でも測距できるようにする。
         uwb.end();
         uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
     }

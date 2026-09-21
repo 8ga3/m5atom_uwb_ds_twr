@@ -1,10 +1,10 @@
 // Stamp-UWB / LED / ボタンの配線定数。ANCHOR と TAG で共通。
 #pragma once
 
-// Stamp-UWB host wiring. AtomS3 and AtomS3 Lite expose the same breakout, but
-// the classic ESP32 Atom Lite cannot reuse it at all: GPIO6-8 are wired to the
-// internal SPI flash and GPIO38/39 are input-only, so it gets its own mapping
-// built from the six general-purpose header pins.
+// Stamp-UWB のホスト側配線。AtomS3 と AtomS3 Lite は同じブレイクアウトを
+// 使えるが、旧世代 ESP32 の Atom Lite はまったく使えない: GPIO6-8 は内蔵 SPI
+// フラッシュに配線済み、GPIO38/39 は入力専用のため、汎用ヘッダーピン 6 本から
+// 独自にマッピングを組んでいる。
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 static constexpr int UWB_PIN_IRQ  = 39;
 static constexpr int UWB_PIN_RST  = 38;
@@ -34,7 +34,7 @@ static constexpr int LED_PIN = 35;  // AtomS3 Lite (AtomS3 は画面があり LE
 #else
 static constexpr int LED_PIN = 27;  // Atom Lite
 #endif
-// The Atom RGB LED is uncomfortably bright at full scale.
+// Atom の RGB LED は最大輝度だと直視しづらいほど明るい。
 static constexpr uint8_t LED_BRIGHTNESS = 40;
 
 // 本体ボタン。起動時に押されていたら ID 設定モードへ入る。LED と同じ理由で
@@ -48,13 +48,13 @@ static constexpr int BTN_PIN      = 39;  // Atom Lite
 static constexpr uint8_t BTN_MODE = INPUT;
 #endif
 
-// SPI clock used once the driver leaves its 2MHz probe rate. The QM33120 itself
-// accepts up to 38MHz, so the host bus is the limit: on the classic ESP32 every
-// UWB signal is routed through the GPIO matrix, which caps full-duplex transfers
-// at 20MHz. 20MHz is also an exact divider of the 80MHz APB clock (80/4), unlike
-// the library default of 16MHz (80/5). The ESP32-S3 has plenty of margin here.
-// Override with -D UWB_SPI_FAST_HZ=<hz> to bench another rate; init() falls back
-// to the library default if the readback at the requested rate is corrupt.
+// ドライバが 2MHz のプローブレートを抜けた後に使う SPI クロック。QM33120 自体は
+// 38MHz まで対応するので、制限はホスト側バスにある: 旧世代 ESP32 では UWB の
+// 全信号が GPIO マトリクスを経由するため、全二重転送は 20MHz が上限になる。
+// 20MHz は 80MHz の APB クロックをちょうど割り切る値 (80/4) でもあり、ライブラリ
+// 既定の 16MHz (80/5) より都合が良い。ESP32-S3 側はこの点で余裕がある。
+// 別のレートを試すときは -D UWB_SPI_FAST_HZ=<hz> で上書きする。init() は指定
+// レートでの読み戻しが壊れていればライブラリ既定値へフォールバックする。
 #ifndef UWB_SPI_FAST_HZ
 #define UWB_SPI_FAST_HZ 20000000
 #endif

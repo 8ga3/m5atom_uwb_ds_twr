@@ -1,4 +1,4 @@
-// M5Atom S3 / AtomS3 Lite / Atom Lite UWB DS-TWR TAG example code
+// M5Atom S3 / AtomS3 Lite / Atom Lite 用 UWB DS-TWR TAG サンプルコード
 
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
@@ -88,7 +88,7 @@ static void runRanging()
     stat.responded = result.success;
     if (result.success) stat.distanceM = result.distanceM;
 
-    // Print accumulated statistics every LOG_INTERVAL attempts per anchor.
+    // アンカーごとに LOG_INTERVAL 回試行するたびに累積統計を出力する。
     if ((stat.attempts % LOG_INTERVAL) == 0) {
         const uint32_t failCount = stat.attempts - stat.ok;
         if (result.success) {
@@ -134,8 +134,8 @@ void setup()
 
     uwbReady = initUwb(UWB_SPI_FAST_HZ);
     if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
-        // The link either never came up or failed the fast-rate readback. Retry
-        // once at the library default so a marginal board still ranges.
+        // リンクが上がらなかったか、高速レートでの読み戻しに失敗した。ライブラリ
+        // 既定のクロックで 1 回だけ再試行し、際 (きわ) の基板でも測距できるようにする。
         uwb.end();
         uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
     }
