@@ -75,11 +75,6 @@ static bool initUwb()
     config.pin_mosi   = UWB_PIN_MOSI;
     config.pin_sck    = UWB_PIN_SCK;
     config.pin_cs     = UWB_PIN_CS;
-#if !defined(CONFIG_IDF_TARGET_ESP32S3)
-    // classic ESP32 では UWB の全信号が GPIO マトリクス経由になるため、既定の
-    // 16MHz だと取りこぼす場合がある。ヘッダ配線の余裕を見て速度を落とす。
-    config.spi_fast_hz = 8000000;
-#endif
 
     M5Stamp_UWBPHYConfig phy;
     // Channel 9 is the only UWB channel permitted in Japan; the tag must match.
