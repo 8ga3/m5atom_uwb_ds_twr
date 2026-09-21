@@ -46,6 +46,18 @@ static constexpr int LED_PIN = 27;  // Atom Lite
 // The Atom RGB LED is uncomfortably bright at full scale.
 static constexpr uint8_t LED_BRIGHTNESS = 40;
 
+// SPI clock used once the driver leaves its 2MHz probe rate. The QM33120 itself
+// accepts up to 38MHz, so the host bus is the limit: on the classic ESP32 every
+// UWB signal is routed through the GPIO matrix, which caps full-duplex transfers
+// at 20MHz. 20MHz is also an exact divider of the 80MHz APB clock (80/4), unlike
+// the library default of 16MHz (80/5). The ESP32-S3 has plenty of margin here.
+// Override with -D UWB_SPI_FAST_HZ=<hz> to bench another rate; init() falls back
+// to the library default if the readback at the requested rate is corrupt.
+#ifndef UWB_SPI_FAST_HZ
+#define UWB_SPI_FAST_HZ 20000000
+#endif
+static constexpr uint32_t UWB_SPI_FAST_FALLBACK_HZ = 16000000;
+
 Adafruit_NeoPixel rgbLed(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 bool hasLed = false;
 
@@ -63,7 +75,7 @@ uint32_t noFinalCount  = 0;
 // panel when no display was detected.
 bool hasDisplay = false;
 
-static bool initUwb()
+static bool initUwb(uint32_t spiFastHz)
 {
     // Stamp-UWB connections to the QM33120 UWB transceiver.
     M5Stamp_UWBConfig config;
@@ -75,6 +87,10 @@ static bool initUwb()
     config.pin_mosi   = UWB_PIN_MOSI;
     config.pin_sck    = UWB_PIN_SCK;
     config.pin_cs     = UWB_PIN_CS;
+    // Keep spi_slow_hz at the library default (2MHz): probing and the reset
+    // sequence run before the chip's clock PLL is up, where only slow SPI is
+    // guaranteed. Only the post-init rate is raised here.
+    config.spi_fast_hz = spiFastHz;
 
     M5Stamp_UWBPHYConfig phy;
     // Channel 9 is the only UWB channel permitted in Japan; the tag must match.
@@ -106,6 +122,18 @@ static bool initUwb()
         Serial.printf("UWB_ID,result=FAIL,expected=0xDECA0314\n");
         return false;
     }
+
+    // deviceId() is the value cached while probing, when the bus still ran at
+    // spi_slow_hz. The driver switched to spi_fast_hz inside begin(), so read
+    // the register once more: a corrupt readback means this wiring cannot hold
+    // the requested rate, and every later transfer would be silently unreliable.
+    const uint32_t fastId = uwb.readRawDeviceId();
+    if (fastId != M5STAMP_UWB_QM33120_DEVICE_ID) {
+        Serial.printf("UWB_SPI,result=FAIL,fast_hz=%lu,dev_id=0x%08lX\n", static_cast<unsigned long>(spiFastHz),
+                      static_cast<unsigned long>(fastId));
+        return false;
+    }
+    Serial.printf("UWB_SPI,result=OK,fast_hz=%lu\n", static_cast<unsigned long>(spiFastHz));
 
     Serial.printf("UWB_CONFIG,result=OK,ch=%u,plen=%u,rate=6M8,tx_power=0x%08lX\n", static_cast<unsigned>(phy.channel),
                   static_cast<unsigned>(phy.preambleLength), static_cast<unsigned long>(phy.txPower));
@@ -309,6 +337,20 @@ void setup()
         rgbLed.show();
     }
 
+#if !defined(CONFIG_IDF_TARGET_ESP32S3)
+    // The classic ESP32 build logs over UART0, and arduino-esp32 leaves that
+    // port without a TX ring buffer: anything longer than the 128-byte hardware
+    // FIFO blocks the caller until the FIFO drains, which is about 10ms for the
+    // stat line at 115200. The radio only listens inside respondDSRange(), so
+    // such a stall is dead air on the air interface - harmless at the current
+    // 5Hz, but a fifth of the budget once the exchange rate goes up. A TX ring
+    // buffer turns Serial.printf back into a memcpy. The size can only be set
+    // while the driver is down, hence end() first (a no-op before the first
+    // begin()). The ESP32-S3 build uses USB-Serial/JTAG, which already has a
+    // 256-byte ring buffer and never blocks like this.
+    Serial.end();
+    Serial.setTxBufferSize(512);
+#endif
     Serial.begin(115200);
     // USB CDC drops output until the host opens the port; wait briefly for it.
     const uint32_t serialWaitStart = millis();
@@ -321,7 +363,13 @@ void setup()
     Serial.printf("HOST,board=%d,display=%d,led=%d\n", static_cast<int>(M5.getBoard()), hasDisplay ? 1 : 0,
                   hasLed ? 1 : 0);
 
-    uwbReady = initUwb();
+    uwbReady = initUwb(UWB_SPI_FAST_HZ);
+    if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
+        // The link either never came up or failed the fast-rate readback. Retry
+        // once at the library default so a marginal board still ranges.
+        uwb.end();
+        uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
+    }
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
     updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwb.lastError()));
 }
