@@ -4,6 +4,8 @@
 #include <M5Stamp_UWB.h>
 #include <Adafruit_NeoPixel.h>
 
+#include "device_id.h"
+
 static constexpr uint32_t LOG_INTERVAL = 20;
 // The tag ranges every 200ms while our receive window is only 100ms, so quiet
 // gaps between exchanges are normal. Hold the last result on screen this long
@@ -46,6 +48,17 @@ static constexpr int LED_PIN = 27;  // Atom Lite
 // The Atom RGB LED is uncomfortably bright at full scale.
 static constexpr uint8_t LED_BRIGHTNESS = 40;
 
+// 本体ボタン。起動時に押されていたら ID 設定モードへ入る。LED と同じ理由で
+// getBoard() は信用せず、ビルドターゲットでピンを決める。Atom Lite の G39 は
+// 入力専用ピンで内部プルアップを持たないが、基板側にプルアップがある。
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+static constexpr int BTN_PIN      = 41;  // AtomS3 / AtomS3 Lite
+static constexpr uint8_t BTN_MODE = INPUT_PULLUP;
+#else
+static constexpr int BTN_PIN      = 39;  // Atom Lite
+static constexpr uint8_t BTN_MODE = INPUT;
+#endif
+
 // SPI clock used once the driver leaves its 2MHz probe rate. The QM33120 itself
 // accepts up to 38MHz, so the host bus is the limit: on the classic ESP32 every
 // UWB signal is routed through the GPIO matrix, which caps full-duplex transfers
@@ -63,6 +76,8 @@ bool hasLed = false;
 
 M5Stamp_UWB uwb;
 M5Stamp_UWBDSRangeConfig rangeConfig;
+// 自機のアンカー ID (= responderAddress)。NVS から読むか起動時に設定する。
+uint16_t anchorId      = DEVICE_ID_UNSET;
 bool uwbReady          = false;
 uint32_t responseCount = 0;
 uint32_t failCount     = 0;
@@ -96,10 +111,16 @@ static bool initUwb(uint32_t spiFastHz)
     // Channel 9 is the only UWB channel permitted in Japan; the tag must match.
     phy.channel = M5Stamp_UWBChannel::Channel9;
 
-    // Both devices must use the same network addresses and DS-TWR timing.
-    rangeConfig.panId                          = 0xDECA;
-    rangeConfig.initiatorAddress               = 0x0001;
-    rangeConfig.responderAddress               = 0x0002;
+    // Both devices must use the same PAN and DS-TWR timing. The responder
+    // address is this anchor's own ID: respondDSRange() drops every frame whose
+    // dst differs, which is what keeps the tag's sweep from being answered by
+    // more than one anchor at a time.
+    rangeConfig.panId = 0xDECA;
+    // 応答側は受信フレームの src を見ておらず (dst と panId のみ照合)、応答は
+    // 常に Poll の送信元へ返す。したがってタグ側の ID を知る必要はなく、この
+    // フィールドは responder では未使用。
+    rangeConfig.initiatorAddress               = 0x0000;
+    rangeConfig.responderAddress               = anchorId;
     rangeConfig.responseRxAfterTxDelayUus      = 1500;
     rangeConfig.responseTxDelayUus             = 3000;
     rangeConfig.finalTxDelayUus                = 1800;
@@ -191,13 +212,25 @@ static uint32_t attemptCount()
 
 uint32_t lastLedColor = UINT32_MAX;
 
-// On the screenless Lite boards the whole status is carried by the single RGB
-// LED: RED = the UWB transceiver is unavailable, YELLOW = no tag ranging with
-// us yet, GREEN = exchanging distances with the tag.
-static void updateLed(DisplayState state)
+// Ok arrives several times a second and every write drives an RMT frame, so
+// only push the LED when the color actually changes.
+static void setLed(uint8_t red, uint8_t green, uint8_t blue)
 {
     if (!hasLed) return;
 
+    const uint32_t color = rgbLed.Color(red, green, blue);
+    if (color == lastLedColor) return;
+    lastLedColor = color;
+    rgbLed.setPixelColor(0, color);
+    rgbLed.show();
+}
+
+// On the screenless Lite boards the whole status is carried by the single RGB
+// LED: RED = the UWB transceiver is unavailable, YELLOW = no tag ranging with
+// us yet, GREEN = exchanging distances with the tag, MAGENTA = waiting for an
+// anchor ID on the serial console.
+static void updateLed(DisplayState state)
+{
     uint8_t red = 0, green = 0;
     if (!uwbReady) {
         red = 255;                 // RED
@@ -206,18 +239,29 @@ static void updateLed(DisplayState state)
     } else {
         red = green = 255;         // YELLOW
     }
+    setLed(red, green, 0);
+}
 
-    // Ok arrives several times a second and every write drives an RMT frame, so
-    // only push the LED when the color actually changes.
-    const uint32_t color = rgbLed.Color(red, green, 0);
-    if (color == lastLedColor) return;
-    lastLedColor = color;
-    rgbLed.setPixelColor(0, color);
-    rgbLed.show();
+// ID 設定モードの表示。マゼンタは他のどの状態でも使わないので、画面のない
+// Lite 系でも「シリアル入力待ちで止まっている」と一目で分かる。
+static void showIdSetup(const char* text, bool error)
+{
+    setLed(255, 0, 255);
+    if (!hasDisplay) return;
+
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.setCursor(0, 0);
+    M5.Display.setTextColor(error ? RED : MAGENTA);
+    M5.Display.println("SET ID");
+    M5.Display.setTextColor(WHITE);
+    M5.Display.printf("%u-\n%u\n", static_cast<unsigned>(ANCHOR_ID_MIN), static_cast<unsigned>(ANCHOR_ID_MAX));
+    M5.Display.println("SERIAL");
+    M5.Display.setTextColor(error ? RED : GREEN);
+    M5.Display.printf(">%s\n", text);
 }
 
 // Same six-line layout as the tag sketch, with the state carried in the color.
-static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs, uint16_t sequence,
+static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs, uint16_t requester,
                          const char* errorText)
 {
     updateLed(state);
@@ -229,7 +273,13 @@ static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs
     M5.Display.setCursor(0, 0);
     M5.Display.setTextColor(color);
     M5.Display.println("UWB ANCHOR");
-    M5.Display.printf("STA:%s\n", uwbReady ? "OK" : "FAIL");
+    // 自機 ID は設定時と同じ 10 進で出す。UWB が上がっていないときは ID より
+    // 故障の方が知りたいので、その行を潰して FAIL を出す。
+    if (uwbReady) {
+        M5.Display.printf("ID:%u\n", static_cast<unsigned>(anchorId));
+    } else {
+        M5.Display.println("STA:FAIL");
+    }
 
     if (state == DisplayState::Ok) {
         M5.Display.printf("D:%.3fm\n", distanceM);
@@ -241,7 +291,9 @@ static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs
         M5.Display.setTextColor(WHITE);
     }
 
-    M5.Display.printf("SEQ:%u\n", sequence);
+    // 測距してきたタグの ID。タグは当面 1 台だが、複数台になったときに
+    // どのタグと交信しているかはここでしか分からない。
+    M5.Display.printf("TG:%u\n", static_cast<unsigned>(requester));
     M5.Display.printf("OK:%lu/%lu\n", static_cast<unsigned long>(responseCount),
                       static_cast<unsigned long>(attemptCount()));
 }
@@ -274,7 +326,7 @@ static void runResponder()
 
             // Redraw only on state change to avoid flicker.
             if (lastDisplayState != DisplayState::Waiting || lastWaitingWasNoPoll != noPoll) {
-                updateStatus(DisplayState::Waiting, 0.0f, result.elapsedMs, result.sequence,
+                updateStatus(DisplayState::Waiting, 0.0f, result.elapsedMs, result.requester,
                              noPoll ? "NOPOLL" : "NOFIN");
                 lastDisplayState     = DisplayState::Waiting;
                 lastWaitingWasNoPoll = noPoll;
@@ -283,7 +335,7 @@ static void runResponder()
         }
 
         ++failCount;
-        updateStatus(DisplayState::Fail, 0.0f, result.elapsedMs, result.sequence, errorShortName(result.error));
+        updateStatus(DisplayState::Fail, 0.0f, result.elapsedMs, result.requester, errorShortName(result.error));
         lastDisplayState = DisplayState::Fail;
         if (failCount % LOG_INTERVAL == 0) {
             Serial.printf("DS_RESP_STAT,count=%lu,fail=%lu,last=FAIL,error=%s\n",
@@ -295,7 +347,7 @@ static void runResponder()
 
     ++responseCount;
     lastSuccessMs = millis();
-    updateStatus(DisplayState::Ok, result.distanceM, result.elapsedMs, result.sequence, nullptr);
+    updateStatus(DisplayState::Ok, result.distanceM, result.elapsedMs, result.requester, nullptr);
     lastDisplayState = DisplayState::Ok;
 
     // Print accumulated statistics every LOG_INTERVAL responses.
@@ -362,6 +414,17 @@ void setup()
     Serial.printf("TWR_MODE,mode=DS-TWR\n");
     Serial.printf("HOST,board=%d,display=%d,led=%d\n", static_cast<int>(M5.getBoard()), hasDisplay ? 1 : 0,
                   hasLed ? 1 : 0);
+
+    // 電源投入 / リセット直後にボタンが押されていたら、設定済みでも ID 設定へ
+    // 入る。現場で ID を振り直す唯一の入口。
+    pinMode(BTN_PIN, BTN_MODE);
+    delay(1);
+    const bool buttonHeld = (digitalRead(BTN_PIN) == LOW);
+    Serial.printf("BUTTON,held=%d\n", buttonHeld ? 1 : 0);
+
+    // ID が決まるまで UWB は初期化しない。responderAddress は initUwb() の中で
+    // この値から作られる。
+    anchorId = deviceIdSetup("ANCHOR", ANCHOR_ID_MIN, ANCHOR_ID_MAX, buttonHeld, showIdSetup);
 
     uwbReady = initUwb(UWB_SPI_FAST_HZ);
     if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
