@@ -3,11 +3,12 @@
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
 
+#include "common/device_id.h"
 #include "common/host_init.h"
 #include "common/hw_pins.h"
 #include "common/status.h"
 #include "common/uwb_link.h"
-#include "device_id.h"
+#include "common/wifi_config.h"
 
 // 巡回するアンカーの ID 一覧。仮実装としてソースに直書きする。将来はサーバー
 // から ID と設置座標をまとめて取得する (doc/multi-anchor-positioning-design.md)。
@@ -57,9 +58,14 @@ static void updateStatus(DisplayState state)
     M5.Display.setTextColor(WHITE);
     M5.Display.printf("ID:%u\n", static_cast<unsigned>(tagId));
 
-    // 128x128 をテキストサイズ 2 で使うと残りは 4 行。5 台以上に増やしたときは
-    // 画面には最初の 4 台しか出ないので、全台分はシリアルログで見る。
-    for (size_t i = 0; (i < ANCHOR_COUNT) && (i < 4); ++i) {
+    // Wi-Fi の状態。OFF = 未設定、-- = 設定済みだが接続できていない、OK = 接続中。
+    M5.Display.setTextColor(wifiIsConnected() ? GREEN : YELLOW);
+    M5.Display.printf("W:%s\n", wifiShortState());
+
+    // 128x128 をテキストサイズ 2 で使うと Wi-Fi 行のぶんを引いて残りは 3 行。
+    // 4 台以上に増やしたときは画面には最初の 3 台しか出ないので、全台分は
+    // シリアルログで見る。
+    for (size_t i = 0; (i < ANCHOR_COUNT) && (i < 3); ++i) {
         const AnchorStat& stat = anchorStats[i];
         M5.Display.setTextColor(stat.responded ? GREEN : YELLOW);
         if (stat.responded) {
@@ -127,6 +133,11 @@ void setup()
     idRangeMax = TAG_ID_MAX;
     tagId      = deviceIdSetup("TAG", TAG_ID_MIN, TAG_ID_MAX, buttonHeld, showIdSetup);
 
+    // Wi-Fi は ID と同じ起動ボタン押下で設定に入る。SSID とパスフレーズはソース
+    // にもリポジトリにも置かず、ここでシリアルから入れた値を NVS に保存する。
+    // 接続の完了は待たない (loop() の wifiMaintain() が状態を追う)。
+    wifiSetup(buttonHeld, showWifiSetup);
+
     // responderAddress は巡回のたびに runRanging() で対象アンカーの ID に
     // 差し替える。ここでは最初のアンカーを入れておく。
     rangeConfig.initiatorAddress = tagId;
@@ -146,6 +157,10 @@ void setup()
 
 void loop()
 {
+    // 接続状態の確認だけを行う。再接続は WiFi ライブラリ側のタスクが受け持つので、
+    // ここで待たされることはない。
+    wifiMaintain();
+
     if (uwbReady) {
         runRanging();
     } else {

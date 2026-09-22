@@ -3,11 +3,11 @@
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
 
+#include "common/device_id.h"
 #include "common/host_init.h"
 #include "common/hw_pins.h"
 #include "common/status.h"
 #include "common/uwb_link.h"
-#include "device_id.h"
 
 static constexpr uint32_t LOG_INTERVAL = 20;
 // タグ側の測距周期は 200ms、受信ウィンドウは 100ms しかないため、交信の間に無通信の

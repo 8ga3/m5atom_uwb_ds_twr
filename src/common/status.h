@@ -40,3 +40,8 @@ void updateLed(DisplayState state);
 // ID 設定モードの表示。マゼンタは他のどの状態でも使わないので、画面のない
 // Lite 系でも「シリアル入力待ちで止まっている」と一目で分かる。
 void showIdSetup(const char* text, bool error);
+
+// Wi-Fi 設定モードの表示。ID 設定と同じマゼンタで入力待ちを示し、見出しの
+// 代わりに入力中の項目名 (ssid / pass) を出す。text には表示してよい文字列だけを
+// 渡すこと - パスフレーズは呼び出し側で伏せ字に置き換える。
+void showWifiSetup(const char* field, const char* text, bool error);

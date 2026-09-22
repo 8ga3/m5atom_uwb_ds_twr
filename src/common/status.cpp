@@ -113,3 +113,19 @@ void showIdSetup(const char* text, bool error)
     M5.Display.setTextColor(error ? RED : GREEN);
     M5.Display.printf(">%s\n", text);
 }
+
+void showWifiSetup(const char* field, const char* text, bool error)
+{
+    setLed(255, 0, 255);
+    if (!hasDisplay) return;
+
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.setCursor(0, 0);
+    M5.Display.setTextColor(error ? RED : MAGENTA);
+    M5.Display.println("SET WIFI");
+    M5.Display.setTextColor(WHITE);
+    M5.Display.println(field);
+    M5.Display.println("SERIAL");
+    M5.Display.setTextColor(error ? RED : GREEN);
+    M5.Display.printf(">%s\n", text);
+}
