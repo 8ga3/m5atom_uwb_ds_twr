@@ -4,6 +4,7 @@
 
 #include "hw_pins.h"
 #include "status.h"
+#include "version.h"
 
 void beginHost()
 {
@@ -46,6 +47,7 @@ void beginSerial(const char* role)
         delay(10);
     }
     Serial.printf("M5Stamp UWB DS-TWR %s\n", role);
+    Serial.printf("FW_VERSION,version=%s\n", FW_VERSION);
     Serial.printf("ROLE,mode=%s\n", role);
     Serial.printf("TWR_MODE,mode=DS-TWR\n");
     Serial.printf("HOST,board=%d,display=%d,led=%d\n", static_cast<int>(M5.getBoard()), hasDisplay ? 1 : 0,

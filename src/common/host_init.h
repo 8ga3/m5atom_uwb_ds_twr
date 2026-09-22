@@ -6,7 +6,7 @@
 // M5.begin() と表示/LED判定 (initStatusHardware()) を済ませる。
 void beginHost();
 
-// Serial を初期化し、USB CDC のオープン待ちと起動ログ (ROLE/TWR_MODE/HOST)
+// Serial を初期化し、USB CDC のオープン待ちと起動ログ (FW_VERSION/ROLE/TWR_MODE/HOST)
 // を出す。role は "ANCHOR" または "TAG"。
 void beginSerial(const char* role);
 
