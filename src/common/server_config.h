@@ -34,6 +34,11 @@ static constexpr char SERVER_NVS_KEY_CONFIG[] = "config";
 
 // IPv4 のドット記法の最大長 ("255.255.255.255")。名前解決は行わない。
 static constexpr size_t SERVER_HOST_MAX       = 15;
+
+// テレメトリ送信先 (doc/server-design.md 5.1 の telemetry.host) の長さ上限。
+// サーバー側の検証は IPv6 も通すが、タグ側の送信経路は IPv4 前提なので同じ長さに
+// 揃える。収まらない宛先を受け取ったときは切り詰めずにテレメトリを止める。
+static constexpr size_t TELEMETRY_HOST_MAX    = SERVER_HOST_MAX;
 static constexpr uint16_t SERVER_PORT_DEFAULT = 8000;  // サーバー側 settings.py の既定値
 
 // 1 タグが巡回するアンカーの上限。4 台構成 (doc/multi-anchor-positioning-design.md)
@@ -72,8 +77,13 @@ struct UwbConfig {
     uint32_t rev;
     int32_t biasMm;
     AnchorConfig anchors[UWB_ANCHOR_MAX];
-    char telemetryHost[SERVER_HOST_MAX + 1];
+    char telemetryHost[TELEMETRY_HOST_MAX + 1];
     uint16_t telemetryPort;
+    // この構成を取得したサーバー。rev はサーバーごとに独立した連番なので、
+    // 宛先を変えたあとに前のサーバーの rev をそのまま送ると、値が偶然一致した
+    // ときに 304 が返って古いアンカーで走り続けてしまう。
+    char sourceHost[SERVER_HOST_MAX + 1];
+    uint16_t sourcePort;
 };
 
 enum class ConfigFetchResult {
@@ -138,7 +148,19 @@ static bool configCacheLoad(UwbConfig& out)
     if ((loaded.anchorCount == 0) || (loaded.anchorCount > UWB_ANCHOR_MAX)) return false;
 
     loaded.telemetryHost[sizeof(loaded.telemetryHost) - 1] = '\0';
-    out                                                    = loaded;
+    loaded.sourceHost[sizeof(loaded.sourceHost) - 1]       = '\0';
+
+    // 宛先を設定済みで、キャッシュの取得元と違うなら使わない。別のサーバーの
+    // 構成で走り出すより、取得できるまで測距を止めるほうが安全である。宛先が
+    // 未設定のときは取得しようがないので、そのままキャッシュを使う。
+    if (serverConfigured && ((strcmp(loaded.sourceHost, serverHost) != 0) || (loaded.sourcePort != serverPort))) {
+        Serial.printf("CONFIG,warn=cache_endpoint_mismatch,cached_host=%s,cached_port=%u\n",
+                      (loaded.sourceHost[0] != '\0') ? loaded.sourceHost : "-",
+                      static_cast<unsigned>(loaded.sourcePort));
+        return false;
+    }
+
+    out = loaded;
     return true;
 }
 
@@ -268,15 +290,22 @@ static bool serverEndpointSetup(bool forceSetup, WifiSetupMessageFn onMessage)
 // 呼び出し側は手前のキャッシュをそのまま使い続ける。
 static bool configParseJson(const JsonDocument& doc, UwbConfig& out)
 {
-    const uint32_t rev = doc["rev"] | 0UL;
+    // 既定値で補わずに型と存在を確かめる。欠けた項目を 0 で埋めると、壊れた
+    // 200 応答が「bias 0 の正しい構成」として有効なキャッシュを上書きしてしまう。
+    JsonVariantConst revVar  = doc["rev"];
+    JsonVariantConst biasVar = doc["bias_mm"];
+    JsonVariantConst panVar  = doc["pan_id"];
+    if (!revVar.is<uint32_t>() || !biasVar.is<int32_t>() || !panVar.is<const char*>()) return false;
+
+    const uint32_t rev = revVar.as<uint32_t>();
     if (rev == CONFIG_REV_UNSET) return false;
 
     UwbConfig parsed = {};
     parsed.format    = CONFIG_CACHE_FORMAT;
     parsed.rev       = rev;
-    parsed.biasMm    = doc["bias_mm"] | 0;
+    parsed.biasMm    = biasVar.as<int32_t>();
 
-    if (!configParseId(doc["pan_id"] | "", parsed.panId)) return false;
+    if (!configParseId(panVar.as<const char*>(), parsed.panId)) return false;
 
     JsonArrayConst anchors = doc["anchors"].as<JsonArrayConst>();
     if (anchors.isNull()) return false;
@@ -289,23 +318,45 @@ static bool configParseJson(const JsonDocument& doc, UwbConfig& out)
             break;
         }
 
-        AnchorConfig& slot = parsed.anchors[parsed.anchorCount];
-        if (!configParseId(anchor["id"] | "", slot.id)) return false;
-        if (!configMetersToMm(anchor["x"] | NAN, slot.xMm)) return false;
-        if (!configMetersToMm(anchor["y"] | NAN, slot.yMm)) return false;
-        if (!configMetersToMm(anchor["z"] | NAN, slot.zMm)) return false;
+        AnchorConfig& slot   = parsed.anchors[parsed.anchorCount];
+        JsonVariantConst idVar = anchor["id"];
+        JsonVariantConst xVar  = anchor["x"];
+        JsonVariantConst yVar  = anchor["y"];
+        JsonVariantConst zVar  = anchor["z"];
+        if (!idVar.is<const char*>() || !xVar.is<float>() || !yVar.is<float>() || !zVar.is<float>()) return false;
+        if (!configParseId(idVar.as<const char*>(), slot.id)) return false;
+        if (!configMetersToMm(xVar.as<float>(), slot.xMm)) return false;
+        if (!configMetersToMm(yVar.as<float>(), slot.yMm)) return false;
+        if (!configMetersToMm(zVar.as<float>(), slot.zMm)) return false;
         ++parsed.anchorCount;
     }
     if (parsed.anchorCount == 0) return false;
 
+    // telemetry は構成の一部として必ず入る (doc/server-design.md 5.1)。
     JsonObjectConst telemetry = doc["telemetry"].as<JsonObjectConst>();
-    if (!telemetry.isNull()) {
-        const char* host = telemetry["host"] | "";
+    if (telemetry.isNull()) return false;
+
+    JsonVariantConst hostVar  = telemetry["host"];
+    JsonVariantConst portVar  = telemetry["port"];
+    JsonVariantConst batchVar = telemetry["batch_cycles"];
+    if (!hostVar.is<const char*>() || !portVar.is<uint16_t>() || !batchVar.is<uint8_t>()) return false;
+
+    const char* host = hostVar.as<const char*>();
+    if (strlen(host) > TELEMETRY_HOST_MAX) {
+        // サーバー側の検証は IPv6 も通すため、IPv4 に収まらない宛先が届きうる。
+        // 切り詰めると別のアドレスへ投げることになるので、宛先を空にして
+        // テレメトリだけを止める。測距と測位はこの値に依存しない。
+        Serial.printf("CONFIG,warn=telemetry_host_too_long,len=%u,max=%u\n", static_cast<unsigned>(strlen(host)),
+                      static_cast<unsigned>(TELEMETRY_HOST_MAX));
+        parsed.telemetryHost[0] = '\0';
+        parsed.telemetryPort    = 0;
+    } else {
         strncpy(parsed.telemetryHost, host, sizeof(parsed.telemetryHost) - 1);
         parsed.telemetryHost[sizeof(parsed.telemetryHost) - 1] = '\0';
-        parsed.telemetryPort                                   = telemetry["port"] | 0;
-        parsed.batchCycles                                     = telemetry["batch_cycles"] | 1;
+        parsed.telemetryPort                                   = portVar.as<uint16_t>();
     }
+
+    parsed.batchCycles = batchVar.as<uint8_t>();
     if (parsed.batchCycles == 0) parsed.batchCycles = 1;
 
     out = parsed;
@@ -384,6 +435,12 @@ static ConfigFetchResult configFetch(uint16_t tagId, UwbConfig& config)
         Serial.println("CONFIG,result=ERR,reason=invalid");
         return ConfigFetchResult::Failed;
     }
+
+    // どのサーバーから取った構成かを一緒に残す。次回の起動で宛先が変わっていれば
+    // configCacheLoad() がこの値を見てキャッシュを捨てる。
+    strncpy(fetched.sourceHost, serverHost, sizeof(fetched.sourceHost) - 1);
+    fetched.sourceHost[sizeof(fetched.sourceHost) - 1] = '\0';
+    fetched.sourcePort                                 = serverPort;
 
     config = fetched;
     configLogSummary(config, "server");
