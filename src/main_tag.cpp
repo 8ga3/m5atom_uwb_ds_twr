@@ -68,8 +68,8 @@ static void applyConfig()
     for (AnchorStat& stat : anchorStats) stat = AnchorStat{};
     anchorIndex = 0;
 
-    // PAN ID もサーバーが配る。ANCHOR 側は uwb_link.cpp の既定値 (0xDECA) で
-    // 動くので、サーバー側で変えるときはアンカーのファームも合わせる必要がある。
+    // PAN ID もサーバーが配る。ANCHOR 側は UWB_DEFAULT_PAN_ID で動くので、
+    // サーバー側で変えるときはアンカーのファームも合わせる必要がある。
     rangeConfig.panId            = tagConfig.panId;
     rangeConfig.responderAddress = tagConfig.anchors[0].id;
 }
@@ -216,7 +216,10 @@ void setup()
     serverEndpointSetup(buttonHeld, showServerSetup);
 
     // アンカーの巡回先は構成から決まる。responderAddress は巡回のたびに
-    // runRanging() で差し替えるので、ここでは先頭のアンカーが入る。
+    // runRanging() で差し替えるので、ここでは先頭のアンカーが入る。PAN ID は
+    // 構成を取れなかったときのために既定値を入れておき、取れたら applyConfig()
+    // が上書きする。initUwb() はどちらの値にも触れない。
+    rangeConfig.panId            = UWB_DEFAULT_PAN_ID;
     rangeConfig.initiatorAddress = tagId;
     setupConfig();
 

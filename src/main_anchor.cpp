@@ -147,6 +147,7 @@ void setup()
     // フィールドは responder では未使用。responderAddress はこのアンカーの自機 ID
     // であり、respondDSRange() は dst が一致しないフレームをすべて捨てる。これに
     // よって、タグが順に呼びかけていく中で複数アンカーが同時に応答しないようになる。
+    rangeConfig.panId            = UWB_DEFAULT_PAN_ID;
     rangeConfig.initiatorAddress = 0x0000;
     rangeConfig.responderAddress = anchorId;
 
