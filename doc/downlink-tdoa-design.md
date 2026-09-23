@@ -13,7 +13,7 @@
 ## 1. 背景: DS-TWR 巡回方式の台数の壁
 
 現行の DS-TWR は Poll → Response → Final → Result の 4 フレーム構成で、
-タイミングは [src/main.cpp](../src/main.cpp) の `rangeConfig` に設定されている。
+タイミングは [src/common/uwb_link.cpp](../src/common/uwb_link.cpp) の `rangeConfig` に設定されている。
 1 回の測距に要する時間を積算すると次のようになる。
 
 | 内訳 | 時間 |
@@ -357,7 +357,8 @@ SPI 初期化とドライバインスタンス管理がラッパー側にある�
 
 - **Initiator の冗長化**: Initiator が落ちるとシステム全体が止まる。ローテーション方式の検討
 - **スロット 500 µs の実機検証**: ESP32 の turnaround が本当に 300 µs に収まるか要実測。
-  Atom Lite は `spi_fast_hz = 8 MHz` に落としているため不利 ([src/main.cpp](../src/main.cpp) 参照)
+  Atom Lite は `spi_fast_hz = 8 MHz` に落としているため不利
+  ([src/common/uwb_link.cpp](../src/common/uwb_link.cpp) 参照)
   - 8MHzに落と差なくても動作したのを確認した。ハンダ不良が原因で動作が不安定だった可能性あり。
 - **CFO 補正後の残差の実測**: 0.01 ppm という想定値の妥当性確認
 - **マルチパス環境での外れ値率**: 屋内の実測データが必要

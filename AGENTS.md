@@ -26,6 +26,19 @@
 - リリース手順: `develop` の変更を `main` にマージ → バージョンから `-dev` を外す → `vMAJOR.MINOR.PATCH` の tag
   を打つ → `develop` 側のバージョンを次の開発バージョン (`{次のバージョン}-dev`) に上げる
 
+## 設計文書の同期
+
+`doc/` 以下の 3 つの設計メモ (`server-design.md`、`multi-anchor-positioning-design.md`、
+`downlink-tdoa-design.md`) と `doc/images/` は、サーバー実装側の `location_server_uwb` リポジトリと
+同一の内容を保つ。設計の正本は `doc/server-design.md` である。
+
+- どちらか一方の文書だけを書き換えない。変更するときは両リポジトリへ同じ内容を入れる
+- 文書への変更を含む作業では、作業の最後に `python tools/check_doc_sync.py ../location_server_uwb` で
+  一致を確認する
+- `doc/` の文書からソースコードを参照するリンクは、ファームウェア側のパス (`../src/...`) で書く。
+  同じ文書がサーバー側リポジトリにも置かれるため、あちらではこのリンクが解決しない点は許容する
+- `tools/check_doc_sync.py` 自体も両リポジトリで同一に保つ
+
 ## Markdown
 
 `doc/*.md` と本ファイルは markdownlint を通す。設定は `.markdownlint.jsonc`。
