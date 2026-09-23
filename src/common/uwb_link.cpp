@@ -28,10 +28,10 @@ bool initUwb(uint32_t spiFastHz)
     // チャンネル 9 は日本で許可されている唯一の UWB チャンネル。両側で一致させる。
     phy.channel = M5Stamp_UWBChannel::Channel9;
 
-    // 両機とも同じ PAN と DS-TWR タイミングを使う必要がある。initiatorAddress /
-    // responderAddress は呼び出し側 (ANCHOR/TAG それぞれの setup()) が
-    // initUwb() を呼ぶ前に設定済みという前提。
-    rangeConfig.panId                          = 0xDECA;
+    // 両機とも同じ PAN と DS-TWR タイミングを使う必要がある。panId /
+    // initiatorAddress / responderAddress は呼び出し側 (ANCHOR/TAG それぞれの
+    // setup()) が initUwb() を呼ぶ前に設定済みという前提。ここで panId を
+    // 書き戻すと、TAG がサーバーから受け取った値を握り潰してしまう。
     rangeConfig.responseRxAfterTxDelayUus      = 1500;
     rangeConfig.responseTxDelayUus             = 3000;
     rangeConfig.finalTxDelayUus                = 1800;
