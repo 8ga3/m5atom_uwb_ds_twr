@@ -47,7 +47,8 @@ ID 設定と同じく、起動ボタンを押しながら電源を入れたと�
 - [doc/downlink-tdoa-design.md](doc/downlink-tdoa-design.md) - Downlink-TDoA 方式の設計メモ
 - [doc/server-design.md](doc/server-design.md) - 測位サーバーの設計メモ
 
-`doc/` 以下の設計メモは、サーバー実装側の `location_server_uwb` リポジトリと同じ内容を保つ。
+`doc/` 以下の設計メモは、サーバー実装側の
+[location_server_uwb](https://github.com/8ga3/location_server_uwb) リポジトリと同じ内容を保つ。
 片方だけを書き換えない。一致しているかは次のコマンドで確認できる。
 
 ```sh
