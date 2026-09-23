@@ -33,7 +33,8 @@ uint16_t stateColor(DisplayState state);
 void setLed(uint8_t red, uint8_t green, uint8_t blue);
 
 // 画面のない Lite 系では状態のすべてを RGB LED 1 つで表す: RED = UWB
-// トランシーバーが使えない、YELLOW = 無通信で待機中、GREEN = 測距交信中、
+// トランシーバーが使えない、または測距を開始できない (DisplayState::Fail。
+// サーバー構成が無い場合を含む)、YELLOW = 無通信で待機中、GREEN = 測距交信中、
 // MAGENTA = シリアルコンソールでの ID 入力待ち (showIdSetup() が直接光らせる)。
 void updateLed(DisplayState state);
 
@@ -45,3 +46,7 @@ void showIdSetup(const char* text, bool error);
 // 代わりに入力中の項目名 (ssid / pass) を出す。text には表示してよい文字列だけを
 // 渡すこと - パスフレーズは呼び出し側で伏せ字に置き換える。
 void showWifiSetup(const char* field, const char* text, bool error);
+
+// 測位サーバーの宛先 (IP / ポート) を入力するときの表示。Wi-Fi 設定と同じ形式で、
+// 見出しだけを変える。field には srv_host / srv_port が入る。
+void showServerSetup(const char* field, const char* text, bool error);
