@@ -86,7 +86,7 @@ void setLed(uint8_t red, uint8_t green, uint8_t blue)
 void updateLed(DisplayState state)
 {
     uint8_t red = 0, green = 0;
-    if (!uwbReady) {
+    if (!uwbReady || (state == DisplayState::Fail)) {
         red = 255;                 // RED
     } else if (state == DisplayState::Ok) {
         green = 255;                // GREEN
@@ -123,6 +123,22 @@ void showWifiSetup(const char* field, const char* text, bool error)
     M5.Display.setCursor(0, 0);
     M5.Display.setTextColor(error ? RED : MAGENTA);
     M5.Display.println("SET WIFI");
+    M5.Display.setTextColor(WHITE);
+    M5.Display.println(field);
+    M5.Display.println("SERIAL");
+    M5.Display.setTextColor(error ? RED : GREEN);
+    M5.Display.printf(">%s\n", text);
+}
+
+void showServerSetup(const char* field, const char* text, bool error)
+{
+    setLed(255, 0, 255);
+    if (!hasDisplay) return;
+
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.setCursor(0, 0);
+    M5.Display.setTextColor(error ? RED : MAGENTA);
+    M5.Display.println("SET SRV");
     M5.Display.setTextColor(WHITE);
     M5.Display.println(field);
     M5.Display.println("SERIAL");
