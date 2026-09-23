@@ -23,6 +23,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 
+#include "device_id.h"
 #include "wifi_config.h"
 
 // Wi-Fi (WIFI_NVS_NAMESPACE) や ID (DEVICE_ID_NVS_NAMESPACE) とは別の名前空間に
@@ -175,14 +176,18 @@ static bool configCacheSave(const UwbConfig& config)
 
 // "0x0100" と "256" のどちらの表記も受け付ける。サーバーは前者で返すが、管理 API
 // が 10 進数も受け付ける (doc/server-design.md 5.3) のに合わせておく。
-static bool configParseId(const char* text, uint16_t& out)
+//
+// minId / maxId で用途ごとの範囲を絞る。アンカー ID は device_id.h の採番に従って
+// 0x0100..0xFFFE に限る。0xFFFE より上 (0xFFFF) は 802.15.4 のブロードキャスト
+// アドレスで、宛先に使うと全アンカーが同時に応答してしまう。
+static bool configParseId(const char* text, uint16_t minId, uint16_t maxId, uint16_t& out)
 {
     if ((text == nullptr) || (*text == '\0')) return false;
 
     char* end             = nullptr;
     const unsigned long v = strtoul(text, &end, 0);
     if ((end == text) || (*end != '\0')) return false;
-    if (v > 0xFFFFUL) return false;
+    if ((v < minId) || (v > maxId)) return false;
 
     out = static_cast<uint16_t>(v);
     return true;
@@ -305,7 +310,8 @@ static bool configParseJson(const JsonDocument& doc, UwbConfig& out)
     parsed.rev       = rev;
     parsed.biasMm    = biasVar.as<int32_t>();
 
-    if (!configParseId(panVar.as<const char*>(), parsed.panId)) return false;
+    // PAN ID はアドレスではないので範囲を絞らず 16bit 全域を受け取る。
+    if (!configParseId(panVar.as<const char*>(), 0x0000, 0xFFFF, parsed.panId)) return false;
 
     JsonArrayConst anchors = doc["anchors"].as<JsonArrayConst>();
     if (anchors.isNull()) return false;
@@ -324,7 +330,7 @@ static bool configParseJson(const JsonDocument& doc, UwbConfig& out)
         JsonVariantConst yVar  = anchor["y"];
         JsonVariantConst zVar  = anchor["z"];
         if (!idVar.is<const char*>() || !xVar.is<float>() || !yVar.is<float>() || !zVar.is<float>()) return false;
-        if (!configParseId(idVar.as<const char*>(), slot.id)) return false;
+        if (!configParseId(idVar.as<const char*>(), ANCHOR_ID_MIN, ANCHOR_ID_MAX, slot.id)) return false;
         if (!configMetersToMm(xVar.as<float>(), slot.xMm)) return false;
         if (!configMetersToMm(yVar.as<float>(), slot.yMm)) return false;
         if (!configMetersToMm(zVar.as<float>(), slot.zMm)) return false;
