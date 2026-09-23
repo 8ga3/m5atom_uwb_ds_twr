@@ -235,12 +235,29 @@ CREATE TABLE anchor (
 
 -- 構成全体のリビジョン。タグはこの値でキャッシュの有効性を判断する
 CREATE TABLE config_meta (
-    rev         INTEGER PRIMARY KEY,   -- 単調増加。アンカー表を書き換えるたびに +1
-    pan_id      INTEGER NOT NULL,      -- 0xDECA
-    bias_mm     INTEGER NOT NULL,      -- 全測距へ加算する共通オフセット (self-survey の b)
-    note        TEXT,
-    created_at  TEXT NOT NULL
+    rev              INTEGER PRIMARY KEY,   -- 単調増加。構成を書き換えるたびに +1
+    pan_id           INTEGER NOT NULL,      -- 0xDECA
+    bias_mm          INTEGER NOT NULL,      -- 全測距へ加算する共通オフセット (self-survey の b)
+    telemetry_host   TEXT NOT NULL,         -- テレメトリ送信先 IP。5.1 の telemetry.host
+    telemetry_port   INTEGER NOT NULL,      -- 0 ならタグはテレメトリ送信を停止する
+    batch_cycles     INTEGER NOT NULL,      -- 1 パケットに詰めるサイクル数
+    note             TEXT,
+    created_at       TEXT NOT NULL
 );
+
+-- リビジョンごとのアンカー座標スナップショット。anchor 表は現在値だけを持つため、
+-- 過去のセッションが使った座標表はこちらから復元する
+CREATE TABLE config_anchor (
+    rev         INTEGER NOT NULL REFERENCES config_meta(rev),
+    id          INTEGER NOT NULL,      -- anchor.id と同じ responderAddress
+    label       TEXT,
+    x_mm        INTEGER NOT NULL,
+    y_mm        INTEGER NOT NULL,
+    z_mm        INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL,
+    source      TEXT NOT NULL,
+    PRIMARY KEY (rev, id)
+) WITHOUT ROWID;
 
 -- タグの 1 回の起動 = 1 セッション。millis() の基準がここで切れる
 CREATE TABLE session (
@@ -315,6 +332,21 @@ UDP なので落ちる。`seq` が連続しているかを見れば、どれだ�
 「UWB の測距が失敗した (`status != 0`)」と「パケットが落ちて記録が無い」は原因が全く違う。
 `seq` の欠番があれば後者と判別できる。
 
+#### 構成は `anchor` と `config_anchor` の二段で持つ
+
+`anchor` は現在値だけを保持する表で、管理 API (5.3) の `GET` / `PUT` が直接扱う対象である。
+これだけでは座標を書き換えた時点で過去の値が消えてしまい、
+「このセッションはどの座標表で走ったか」を後から再現できない。
+
+そこで構成を書き換えるたびに、新しい `rev` と同時に**その時点の全アンカーを `config_anchor` へ写す**。
+`session.config_rev` から `config_anchor` を引けば、走行当時の座標表をそのまま復元できる。
+`anchor` 側は現在値の参照と更新を単純に保つために残す。
+
+`config_meta` には `telemetry_host` / `telemetry_port` / `batch_cycles` も持たせる。
+これらをサーバーの起動設定に置くと、値を変えても `rev` が動かないため ETag (5.1) が古いままになり、
+タグが NVS キャッシュを使い続けて新しい送信先を受け取れない。
+構成の一部として `rev` に載せることで、タグ側のキャッシュ判定を `rev` の比較だけで完結させる。
+
 ---
 
 ## 5. API 仕様
@@ -348,7 +380,8 @@ If-None-Match: "rev-7"
 - `id` が UWB の `responderAddress` そのもの。旧メモ 7.2 にあった `addr` フィールドは廃止する (5.4 参照)
 - 構成が変わっていなければ `304 Not Modified` を返す。タグは NVS キャッシュをそのまま使う
 - `telemetry` でテレメトリの宛先と 1 パケットに詰めるサイクル数をサーバーから指示する。
-  タグのファームを焼き直さずに送信頻度を調整できる。`port` が `0` ならテレメトリ送信を停止する
+  タグのファームを焼き直さずに送信頻度を調整できる。`port` が `0` ならテレメトリ送信を停止する。
+  値は `config_meta` が持ち、変更すると `rev` が +1 されるのでタグ側のキャッシュも更新される (4.2 参照)
 - 応答は `Content-Length` を付けて 1 レスポンスで返し切る。ESP32 側のパーサを単純に保つため
   チャンク転送は使わない
 
@@ -371,13 +404,21 @@ POST /api/v1/hello
 | `PUT` | `/api/v1/anchors/{id}` | 1 台の座標を更新。`rev` が +1 される |
 | `POST` | `/api/v1/anchors:bulk` | 全台まとめて置換。self-survey の結果投入に使う |
 | `PUT` | `/api/v1/config/bias` | バイアス補正値の更新 |
+| `PUT` | `/api/v1/config/telemetry` | テレメトリ送信先と `batch_cycles` の更新。`rev` が +1 される |
+| `GET` | `/api/v1/config/revisions/{rev}` | 過去のリビジョン時点の構成を返す |
 | `GET` | `/api/v1/sessions` | セッション一覧 (成功率・欠測率つき) |
 | `PATCH` | `/api/v1/sessions/{id}` | 実験条件のメモを付与 |
 | `DELETE` | `/api/v1/sessions/{id}` | セッションとその測定データを削除 |
 
-アンカー表を書き換える操作は必ず `config_meta` に新しい `rev` を追加する。
-古い `rev` の行は残すので、「このセッションはどの座標表で走ったか」を後から再現できる。
+フェーズ A で実装するのは `GET`/`PUT` anchors、`PUT /api/v1/config/telemetry`、
+`GET /api/v1/config/revisions/{rev}` の 4 つである。残りは後続フェーズで足す。
+
+構成を書き換える操作は必ず `config_meta` に新しい `rev` を追加し、同時にその時点の全アンカーを
+`config_anchor` へ写す。古い `rev` の行は残すので、
+「このセッションはどの座標表で走ったか」を後から再現できる。
 座標を直したら過去データの評価がずれる、という事故を防ぐために必要である。
+
+`{id}` は JSON と同じ `0x0100` 形式で指定する。10 進数表記も受け付ける。
 
 ### 5.4 ID 表記について
 
@@ -695,10 +736,10 @@ AP が落ちる、電波が届かない、といった事態は走行中に必�
 
 ### フェーズ A: 構成配信のみ
 
-- [ ] SQLite スキーマと初期マイグレーションを実装
-- [ ] `GET /api/v1/config` と管理 API (`GET`/`PUT` anchors) を実装
-- [ ] 座標を手入力する簡易フォームか CLI を用意
-- [ ] タグ側に Wi-Fi 取得 + NVS キャッシュを実装し、`ANCHOR_IDS[]` の直書きを廃止
+- [x] SQLite スキーマと初期マイグレーションを実装
+- [x] `GET /api/v1/config` と管理 API (`GET`/`PUT` anchors) を実装
+- [x] 座標を手入力する CLI (`tools/anchor_cli.py`) を用意
+- [ ] タグ側に Wi-Fi 取得 + NVS キャッシュを実装し、`ANCHOR_IDS[]` の直書きを廃止 (ファーム側リポジトリで行う)
 
 ### フェーズ B: テレメトリ収集
 
