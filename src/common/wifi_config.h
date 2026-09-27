@@ -22,6 +22,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
+#include <atomic>
+
 // ID (device_id.h) とは別の名前空間に置く。用途ごとに分けておくと、Wi-Fi の
 // 設定だけを消したいときに ID を巻き込まない。
 static constexpr char WIFI_NVS_NAMESPACE[] = "wifi";
@@ -40,9 +42,20 @@ using WifiSetupMessageFn = void (*)(const char* field, const char* text, bool er
 static char wifiSsid[WIFI_SSID_MAX + 1] = {0};
 static char wifiPass[WIFI_PASS_MAX + 1] = {0};
 
-static bool wifiConfigured      = false;  // 資格情報があり接続を開始したか
-static bool wifiConnected       = false;  // 直近の監視で接続できていたか
-static uint32_t wifiLastCheckMs = 0;
+// 接続状態の監視と再接続は Core 0 の監視タスクで行う (wifiStartMonitor)。
+// 測距ループ (Core 1) からは wifiIsConnected() で結果を読むだけにする。
+static constexpr BaseType_t WIFI_MONITOR_CORE       = 0;
+static constexpr uint32_t WIFI_MONITOR_PERIOD_MS    = 1000;
+static constexpr uint32_t WIFI_MONITOR_STACK        = 4096;
+// 切断してから再接続を試みるまでの間隔。接続処理 (認証と DHCP) は数秒かかるので、
+// それより短くすると途中の試行を自分で打ち切ってしまう。
+static constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 10000;
+
+static bool wifiConfigured = false;  // 資格情報があり接続を開始したか
+// 直近の監視で接続できていたか。監視タスク (Core 0) が書き、測距ループ (Core 1) が読む。
+static std::atomic<bool> wifiConnected{false};
+static uint32_t wifiLastCheckMs     = 0;
+static uint32_t wifiLastReconnectMs = 0;
 
 // 使い終わったパスフレーズを RAM から消す。memset は「以降読まれない」と判断
 // されると最適化で削られることがあるので、volatile 経由で書く。
@@ -174,18 +187,21 @@ static void wifiBeginConnect()
     // モデムスリープは送信のたびに数十ミリ秒の待ちを生むことがあり、測距ループ
     // から見ると突発的な停止として現れる (doc/server-design.md 7.1)。
     WiFi.setSleep(false);
-    // 切断後の再接続はライブラリ側のタスクへ任せる。測距ループから
-    // WiFi.reconnect() を呼ぶと、その呼び出しの間ずっと測距が止まる。
-    WiFi.setAutoReconnect(true);
+    // ライブラリの自動再接続は使わない。自動再接続は切断イベントのハンドラ内で
+    // WiFi.begin() を呼ぶが、そのハンドラを動かす arduino_events タスクは Core 1
+    // (CONFIG_ARDUINO_EVENT_RUNNING_CORE) に高い優先度で置かれており、測距ループを
+    // 横取りする。再接続は Core 0 の監視タスク (wifiMonitorTask) から行う。
+    WiFi.setAutoReconnect(false);
     WiFi.begin(wifiSsid, wifiPass);
+    wifiLastReconnectMs = millis();
 }
 
 // 起動時の Wi-Fi 設定。forceSetup (起動ボタン押下) のときだけシリアル入力を
 // 受け付ける。未設定でも入力を待たずに進む - 測距は Wi-Fi なしでも動くので、
 // コンソールを繋いでいない機体が起動時に止まるのを避ける。
 //
-// 接続の完了は待たない。ここでは接続を開始するだけで、成否は loop() から呼ぶ
-// wifiMaintain() が報告する。
+// 接続の完了は待たない。ここでは接続を開始するだけで、成否は wifiMaintain() が
+// 報告する (起動後は監視タスクから呼ばれる)。
 static bool wifiSetup(bool forceSetup, WifiSetupMessageFn onMessage)
 {
     bool stored = wifiCredentialsLoad();
@@ -239,12 +255,12 @@ static bool wifiSetup(bool forceSetup, WifiSetupMessageFn onMessage)
     return true;
 }
 
-// 接続状態を監視する。再接続はライブラリに任せているので、ここでは状態が
-// 変わったときにログを出すだけにとどめ、測距ループを止めない。
+// 接続状態を確認し、変わったときにログを出す。監視タスクを起動する前 (起動時の
+// 構成取得の待ち) と、監視タスクの中からだけ呼ぶ。測距ループからは呼ばない。
 static bool wifiMaintain()
 {
     if (!wifiConfigured) return false;
-    if ((millis() - wifiLastCheckMs) < 1000) return wifiConnected;
+    if ((millis() - wifiLastCheckMs) < WIFI_MONITOR_PERIOD_MS) return wifiConnected;
     wifiLastCheckMs = millis();
 
     const bool nowConnected = (WiFi.status() == WL_CONNECTED);
@@ -257,6 +273,33 @@ static bool wifiMaintain()
         Serial.println("WIFI,state=disconnected");
     }
     return wifiConnected;
+}
+
+// 監視タスクの本体。Core 0 に固定し、Wi-Fi ドライバや TCP/IP のタスクと同じ側で
+// 動かす。切断が続いていれば一定間隔で再接続を試みる。WiFi.reconnect() は
+// ドライバへ要求を出すだけで、接続の完了は待たない。
+static void wifiMonitorTask(void*)
+{
+    for (;;) {
+        const bool connected = wifiMaintain();
+        if (!connected && ((millis() - wifiLastReconnectMs) >= WIFI_RECONNECT_INTERVAL_MS)) {
+            wifiLastReconnectMs = millis();
+            const bool requested = WiFi.reconnect();
+            Serial.printf("WIFI,action=reconnect,result=%s\n", requested ? "OK" : "ERR");
+        }
+        vTaskDelay(pdMS_TO_TICKS(WIFI_MONITOR_PERIOD_MS));
+    }
+}
+
+// 監視タスクを起動する。起動後は wifiMaintain() を他から呼ばない。
+static bool wifiStartMonitor()
+{
+    if (!wifiConfigured) return false;
+    const BaseType_t created = xTaskCreatePinnedToCore(wifiMonitorTask, "wifi_monitor", WIFI_MONITOR_STACK, nullptr,
+                                                       1, nullptr, WIFI_MONITOR_CORE);
+    Serial.printf("WIFI,monitor=%s,core=%d\n", (created == pdPASS) ? "started" : "failed",
+                  static_cast<int>(WIFI_MONITOR_CORE));
+    return (created == pdPASS);
 }
 
 // 直近の監視結果。WiFi.status() を毎回呼ばずに済ませるためのキャッシュ。

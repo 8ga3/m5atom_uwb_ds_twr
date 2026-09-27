@@ -8,8 +8,16 @@
 #include "common/hw_pins.h"
 #include "common/server_config.h"
 #include "common/status.h"
+#include "common/telemetry.h"
 #include "common/uwb_link.h"
 #include "common/wifi_config.h"
+
+// 測距ループは Arduino の loop() で回す。loopTask は Arduino コアが
+// xTaskCreatePinnedToCore で ARDUINO_RUNNING_CORE に固定して作るので、ここが 1 なら
+// 測距は Core 1 に固定される。Wi-Fi ドライバと TCP/IP、Wi-Fi の監視タスク
+// (wifi_config.h) は Core 0 に置き、測距の待機が押しのけられる経路を断つ
+// (doc/server-design.md 7.1)。
+static_assert(ARDUINO_RUNNING_CORE == 1, "UWB ranging loop must run on Core 1 (doc/server-design.md 7.1)");
 
 // 巡回するアンカーの ID と設置座標は測位サーバーから受け取る
 // (doc/server-design.md 5.1)。取得できなければ NVS のキャッシュを使い、それも
@@ -40,6 +48,15 @@ uint16_t tagId           = DEVICE_ID_UNSET;
 uint32_t lastRangeMs     = 0;
 uint32_t lastConfigTryMs = 0;
 
+// 起動ごとに作る 32bit 乱数。サーバーは (tag_id, boot_id) でセッションを区切り、
+// millis() が 0 へ戻ったことを知る (doc/server-design.md 4.2)。
+uint32_t bootId = 0;
+bool helloSent  = false;
+// 周期の通番。起動ごとに 0 から数え、1 周期終えるたびに 1 進める。テレメトリの
+// 送信を止めていても進めるので、サーバー側では欠番がそのまま欠測を表す。
+uint32_t cycleSeq           = 0;
+TelemetryCycle currentCycle = {};
+
 // 統計と最新距離はアンカーごとに持つ。遮蔽で 1 台だけ落ちるのが普通なので、
 // 合算値だけでは切り分けができない。
 struct AnchorStat {
@@ -54,6 +71,60 @@ struct AnchorStat {
 };
 AnchorStat anchorStats[UWB_ANCHOR_MAX] = {};
 size_t anchorIndex                     = 0;
+
+// 周期の統計。CYCLE_STAT_INTERVAL_MS ごとに 1 行にまとめてシリアルへ出す。
+// テレメトリの t_tag_ms と同じ情報を Wi-Fi なしでも見られるようにするためのもので、
+// Wi-Fi の有無や AP の切断で周期が乱れるかをシリアルだけで比べられる
+// (doc/server-design.md 7.1)。
+static constexpr uint32_t CYCLE_STAT_INTERVAL_MS = 10000;
+struct CycleStat {
+    uint32_t cycles;         // 間隔を測れた周期の数 (前の周期の先頭がある周期だけ数える)
+    uint32_t periodMinMs;    // 周期の先頭スロットどうしの間隔
+    uint32_t periodMaxMs;
+    uint32_t periodSumMs;
+    uint32_t elapsedMaxMs;   // requestDSRange() 1 回にかかった時間の最大値
+    uint32_t slotLateCount;  // 予定より遅れて始まったスロットの数
+    uint32_t slotLateMaxMs;  // スロットの開始が予定より遅れた時間の最大値
+};
+CycleStat cycleStat      = {};
+uint32_t cycleStartMs    = 0;
+bool cycleStartValid     = false;
+uint32_t lastCycleStatMs = 0;
+
+static void cycleStatReset()
+{
+    cycleStat             = CycleStat{};
+    cycleStat.periodMinMs = UINT32_MAX;
+}
+
+// 周期の先頭スロットを始めるときに呼ぶ。前の周期の先頭からの間隔を記録し、
+// 出力の間隔が過ぎていれば統計を出して数え直す。
+static void cycleStatOnCycleStart(uint32_t startMs)
+{
+    if (cycleStartValid) {
+        const uint32_t period = startMs - cycleStartMs;
+        ++cycleStat.cycles;
+        cycleStat.periodSumMs += period;
+        if (period < cycleStat.periodMinMs) cycleStat.periodMinMs = period;
+        if (period > cycleStat.periodMaxMs) cycleStat.periodMaxMs = period;
+    }
+    cycleStartMs    = startMs;
+    cycleStartValid = true;
+
+    if ((startMs - lastCycleStatMs) < CYCLE_STAT_INTERVAL_MS) return;
+    lastCycleStatMs = startMs;
+    if (cycleStat.cycles > 0) {
+        Serial.printf(
+            "CYCLE_STAT,seq=%lu,cycles=%lu,period_min_ms=%lu,period_max_ms=%lu,period_avg_ms=%.1f,elapsed_max_ms=%lu,"
+            "slot_late=%lu,slot_late_max_ms=%lu,wifi=%s\n",
+            static_cast<unsigned long>(cycleSeq), static_cast<unsigned long>(cycleStat.cycles),
+            static_cast<unsigned long>(cycleStat.periodMinMs), static_cast<unsigned long>(cycleStat.periodMaxMs),
+            static_cast<double>(cycleStat.periodSumMs) / cycleStat.cycles,
+            static_cast<unsigned long>(cycleStat.elapsedMaxMs), static_cast<unsigned long>(cycleStat.slotLateCount),
+            static_cast<unsigned long>(cycleStat.slotLateMaxMs), wifiShortState());
+    }
+    cycleStatReset();
+}
 
 // 構成を受け取った直後の反映。巡回の状態と統計を作り直し、1 スロットの長さを
 // 台数から求める。走行中に rev が変わることは想定していないが、起動直後に
@@ -72,10 +143,26 @@ static void applyConfig()
     for (AnchorStat& stat : anchorStats) stat = AnchorStat{};
     anchorIndex = 0;
 
+    // 周期の統計も巡回の状態と一緒に数え直す。構成を待っていた間の空白を
+    // 周期の間隔として数えないよう、最初の周期の先頭から測り始める。
+    cycleStatReset();
+    cycleStartValid = false;
+    lastCycleStatMs = millis();
+
     // PAN ID もサーバーが配る。ANCHOR 側は UWB_DEFAULT_PAN_ID で動くので、
     // サーバー側で変えるときはアンカーのファームも合わせる必要がある。
     rangeConfig.panId            = tagConfig.panId;
     rangeConfig.responderAddress = tagConfig.anchors[0].id;
+
+    telemetryConfigure(tagId, bootId, tagConfig);
+}
+
+// 構成を得たあとに 1 回だけセッション開始を通知する。HTTP の応答を待つので、
+// 測距を始める前 (起動時と構成の再取得時) にしか呼ばない。
+static void sendHelloOnce()
+{
+    if (helloSent || !configReady) return;
+    helloSent = serverHello(tagId, bootId, tagConfig.rev);
 }
 
 // 1 周期分の結果をまとめて表示する。アンカーごとに 1 行使うので、交信中の
@@ -131,13 +218,45 @@ static void updateStatus(DisplayState state)
 // 1 交信で、周期の先頭に戻ったところで表示を更新する。
 static void runRanging()
 {
-    if (millis() - lastRangeMs < rangeSlotMs) return;
-    lastRangeMs = millis();
+    const uint32_t nowMs   = millis();
+    const uint32_t sinceMs = nowMs - lastRangeMs;
+    if (sinceMs < rangeSlotMs) return;
+    // 予定 (前のスロットの開始 + rangeSlotMs) からの遅れ。直前のスロットの処理が
+    // 1 スロットより長引くと、その分だけここが 0 より大きくなる。
+    const uint32_t lateMs = sinceMs - rangeSlotMs;
+    if (cycleStartValid && (lateMs > 0)) {
+        ++cycleStat.slotLateCount;
+        if (lateMs > cycleStat.slotLateMaxMs) cycleStat.slotLateMaxMs = lateMs;
+    }
+    lastRangeMs = nowMs;
+
+    if (anchorIndex == 0) {
+        cycleStatOnCycleStart(lastRangeMs);
+        // テレメトリの送信は巡回の先頭スロットの直前だけで行い、測距と測距の間に
+        // 割り込ませない (doc/server-design.md 7.1)。スロットの基準時刻は送信前に
+        // 取っているので、送信にかかった時間で周期がずれることはない。
+        telemetryService();
+        currentCycle     = TelemetryCycle{};
+        currentCycle.seq = cycleSeq;
+        currentCycle.tMs = lastRangeMs;
+    }
 
     const uint16_t anchorId      = tagConfig.anchors[anchorIndex].id;
     rangeConfig.responderAddress = anchorId;
 
     const M5Stamp_UWBDSRangeResult result = uwb.requestDSRange(rangeConfig);
+
+    // テレメトリの測距レコード。失敗なのにエラーコードが Ok のままという組み合わせは
+    // ライブラリの仕様上ないはずだが、サーバー側で成功と取り違えないよう 0 以外にする。
+    TelemetryRange& record = currentCycle.ranges[anchorIndex];
+    record.anchorId        = anchorId;
+    record.status          = result.success ? 0
+                             : (result.error == M5Stamp_UWBError::Ok) ? 0xFF
+                                                                       : static_cast<uint8_t>(result.error);
+    record.elapsedMs  = (result.elapsedMs > TELEMETRY_ELAPSED_MAX) ? TELEMETRY_ELAPSED_MAX
+                                                                   : static_cast<uint8_t>(result.elapsedMs);
+    record.distanceMm = result.success ? result.distanceMm : 0;
+    if (result.elapsedMs > cycleStat.elapsedMaxMs) cycleStat.elapsedMaxMs = result.elapsedMs;
 
     AnchorStat& stat = anchorStats[anchorIndex];
     ++stat.attempts;
@@ -185,6 +304,10 @@ static void runRanging()
     anchorIndex = (anchorIndex + 1) % tagConfig.anchorCount;
     if (anchorIndex != 0) return;
 
+    // 1 周期ぶんの記録をテレメトリへ積む。自己位置推定はまだ無いので測位欄は空のまま。
+    telemetryPush(currentCycle);
+    ++cycleSeq;
+
     // 1 周終わった。1 台でも応答していれば測距は生きている。
     bool anyResponse = false;
     for (size_t i = 0; i < tagConfig.anchorCount; ++i) anyResponse |= anchorStats[i].responded;
@@ -212,6 +335,7 @@ static void setupConfig()
     configFetch(tagId, tagConfig);
     lastConfigTryMs = millis();
     applyConfig();
+    sendHelloOnce();
 
     if (!configReady) {
         // アンカーが 1 台も分からない。測距は始められないので、原因が構成に
@@ -237,6 +361,11 @@ void setup()
     // 接続の完了は待たない (setupConfig() が構成取得の直前だけ待つ)。
     wifiSetup(buttonHeld, showWifiSetup);
 
+    // boot_id は Wi-Fi を起動したあとで作る。esp_random() は RF が動いている間は
+    // ハードウェアの真性乱数を返すので、起動をまたいで値が重なることは実質的にない。
+    bootId = esp_random();
+    Serial.printf("BOOT,boot_id=0x%08lX\n", static_cast<unsigned long>(bootId));
+
     // 測位サーバーの宛先も同じ入り口で設定する。mDNS は使わず IP を直接持つ。
     serverEndpointSetup(buttonHeld, showServerSetup);
 
@@ -247,6 +376,11 @@ void setup()
     rangeConfig.panId            = UWB_DEFAULT_PAN_ID;
     rangeConfig.initiatorAddress = tagId;
     setupConfig();
+
+    // ここから先は Wi-Fi の監視と再接続を Core 0 のタスクへ任せ、測距ループ側では
+    // 接続の状態を読むだけにする。
+    wifiStartMonitor();
+    Serial.printf("TASK,ranging_core=%d\n", xPortGetCoreID());
 
     uwbReady = initUwb(UWB_SPI_FAST_HZ);
     if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
@@ -262,10 +396,6 @@ void setup()
 
 void loop()
 {
-    // 接続状態の確認だけを行う。再接続は WiFi ライブラリ側のタスクが受け持つので、
-    // ここで待たされることはない。
-    wifiMaintain();
-
     if (!configReady) {
         // 構成が無い間は測距に入れない。Wi-Fi やサーバーが後から立ち上がる場合に
         // 備えて、一定間隔で取得をやり直す。
@@ -273,6 +403,7 @@ void loop()
             lastConfigTryMs = millis();
             if (configFetch(tagId, tagConfig) == ConfigFetchResult::Updated) {
                 applyConfig();
+                sendHelloOnce();
                 Serial.printf("ANCHORS,count=%u\n", static_cast<unsigned>(tagConfig.anchorCount));
             }
             // 画面の書き換えは取得を試みたときだけにする。100ms ごとに全画面を
