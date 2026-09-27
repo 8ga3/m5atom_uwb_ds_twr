@@ -111,10 +111,12 @@ static void updateStatus(DisplayState state)
         return;
     }
 
-    // 128x128 をテキストサイズ 2 で使うと Wi-Fi 行のぶんを引いて残りは 3 行。
-    // 4 台以上に増やしたときは画面には最初の 3 台しか出ないので、全台分は
-    // シリアルログで見る。
-    for (size_t i = 0; (i < tagConfig.anchorCount) && (i < 3); ++i) {
+    // 128x128 をテキストサイズ 2 で使うと 1 画面は 8 行で、見出しと ID と Wi-Fi の
+    // 3 行を引くと残りは 5 行。入りきらない台数のときは画面の下端で打ち切るので、
+    // 全台分はシリアルログで見る。
+    for (size_t i = 0; (i < tagConfig.anchorCount)
+                       && ((M5.Display.getCursorY() + M5.Display.fontHeight()) <= M5.Display.height());
+         ++i) {
         const AnchorStat& stat = anchorStats[i];
         M5.Display.setTextColor(stat.responded ? GREEN : YELLOW);
         if (stat.responded) {
