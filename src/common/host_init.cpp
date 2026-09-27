@@ -35,10 +35,26 @@ void beginSerial(const char* role)
     // 頻度を上げると予算の 5 分の 1 を占めるようになる。TX リングバッファを
     // 用意すれば Serial.printf は memcpy 相当に戻る。バッファサイズはドライバ
     // 停止中しか設定できないため、先に end() する (初回 begin() 前は no-op)。
-    // ESP32-S3 ビルドは USB-Serial/JTAG を使い、既に 256 バイトのリングバッファ
-    // を持つのでこのブロックは発生しない。
     Serial.end();
     Serial.setTxBufferSize(512);
+#else
+    // ESP32-S3 ビルドは USB-Serial/JTAG (HWCDC) を使う。既定の TX リングバッファ
+    // は 256 バイトしかなく、ホストが引き取りを少し止めただけで満杯になる。満杯の
+    // ときの書き込みは tx_timeout_ms (既定 100ms) まで待つので、統計行を出した周期
+    // だけ 200ms が 256ms に延びていた (テレメトリの t_tag_ms で確認)。
+    //
+    // バッファを大きくして満杯になりにくくし、それでも満杯になったら 2ms で諦めて
+    // ログを捨てる。測距ループを止めないことをログの完全性より優先する
+    // (doc/server-design.md 7.1)。0 にしないのは、HWCDC::write() がこの値を
+    // 「進捗なしで待つ回数」にも使っており、0 だと減算で桁あふれして逆に際限なく
+    // 待つため。諦めたあとは HWCDC がホストの切断とみなして書き込みを捨て、
+    // ホストが再び引き取り始めた時点で送信に戻る。
+    //
+    // M5.begin() は cfg.serial_baudrate が 0 (既定) なので Serial を開始しない。
+    // ここはまだ begin() 前で、ISR もバッファを使っていないため end() は要らない
+    // (HWCDC::end() は USB の再列挙を起こすので呼ばない)。
+    Serial.setTxBufferSize(4096);
+    Serial.setTxTimeoutMs(2);
 #endif
     Serial.begin(115200);
     // USB CDC はホストがポートを開くまで出力を捨てるので、少し待つ。
