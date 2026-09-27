@@ -24,6 +24,7 @@
 #include <Preferences.h>
 
 #include "device_id.h"
+#include "version.h"
 #include "wifi_config.h"
 
 // Wi-Fi (WIFI_NVS_NAMESPACE) や ID (DEVICE_ID_NVS_NAMESPACE) とは別の名前空間に
@@ -454,4 +455,58 @@ static ConfigFetchResult configFetch(uint16_t tagId, UwbConfig& config)
     // なるだけなので、ログを残して先へ進む。
     if (!configCacheSave(config)) Serial.println("CONFIG,warn=cache_save_failed");
     return ConfigFetchResult::Updated;
+}
+
+// セッション開始をサーバーへ通知する (POST /api/v1/hello、doc/server-design.md 5.2)。
+// 構成取得の直後に 1 回だけ呼ぶ。失敗しても走行は続けてよく、サーバーは UDP の
+// テレメトリを最初に受けた時点でセッションを作る (fw_version が埋まらないだけ)。
+//
+// 起動時にしか呼ばない前提で、応答は最長 CONFIG_HTTP_TIMEOUT_MS 待つ。測距ループの
+// 中から呼んではならない。
+static bool serverHello(uint16_t tagId, uint32_t bootId, uint32_t configRev)
+{
+    if (!serverConfigured) return false;
+    if (!wifiIsConnected()) {
+        Serial.println("HELLO,result=SKIP,reason=wifi_not_connected");
+        return false;
+    }
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://%s:%u/api/v1/hello", serverHost, static_cast<unsigned>(serverPort));
+
+    // config_rev はキャッシュも無く構成を持っていないときだけ null にする。この関数を
+    // 呼ぶのは構成を得た後なので、通常は値が入る。
+    char rev[12];
+    if (configRev == CONFIG_REV_UNSET) {
+        snprintf(rev, sizeof(rev), "null");
+    } else {
+        snprintf(rev, sizeof(rev), "%lu", static_cast<unsigned long>(configRev));
+    }
+    char body[160];
+    const int length = snprintf(body, sizeof(body),
+                                "{\"tag_id\":%u,\"boot_id\":%lu,\"fw_version\":\"%s\",\"config_rev\":%s}",
+                                static_cast<unsigned>(tagId), static_cast<unsigned long>(bootId), FW_VERSION, rev);
+    if ((length < 0) || (static_cast<size_t>(length) >= sizeof(body))) {
+        Serial.println("HELLO,result=ERR,reason=body_too_long");
+        return false;
+    }
+
+    HTTPClient http;
+    if (!http.begin(url)) {
+        Serial.println("HELLO,result=ERR,reason=begin");
+        return false;
+    }
+    http.setTimeout(CONFIG_HTTP_TIMEOUT_MS);
+    http.setConnectTimeout(CONFIG_HTTP_TIMEOUT_MS);
+    http.useHTTP10(true);
+    http.addHeader("Content-Type", "application/json");
+    const int status = http.POST(reinterpret_cast<uint8_t*>(body), static_cast<size_t>(length));
+    http.end();
+
+    if (status != HTTP_CODE_OK) {
+        Serial.printf("HELLO,result=ERR,status=%d\n", status);
+        return false;
+    }
+    Serial.printf("HELLO,result=OK,boot_id=0x%08lX,config_rev=%s\n", static_cast<unsigned long>(bootId), rev);
+    return true;
 }
