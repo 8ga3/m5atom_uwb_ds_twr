@@ -85,6 +85,7 @@ static size_t telemetryCount        = 0;
 static TelemetryStats telemetryStats = {};
 static uint32_t telemetryLastLogMs  = 0;
 static uint8_t telemetryPacket[TELEMETRY_PACKET_MAX];
+static bool telemetrySocketErrorLogged = false;
 
 // 構成を反映する。宛先・束ねる周期数・アンカー台数のどれかが変わると 1 パケット内の
 // レコード数や宛先が揃わなくなるので、溜まっているぶんは捨てて作り直す。
@@ -240,8 +241,14 @@ static void telemetryService()
     if (telemetrySocket < 0) {
         telemetrySocket = lwip_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (telemetrySocket < 0) {
+            // 作れない状態が続くと周期ごとにここへ来るので、理由は最初の 1 回だけ残し、
+            // 以降の件数は TELEMETRY_STAT の send_fail で追う。溜まった周期はそのまま
+            // 残り、溢れたぶんは telemetryPush() が古いほうから捨てる。
             ++telemetryStats.sendFailed;
-            Serial.printf("TELEMETRY,result=ERR,reason=socket,errno=%d\n", errno);
+            if (!telemetrySocketErrorLogged) {
+                Serial.printf("TELEMETRY,result=ERR,reason=socket,errno=%d\n", errno);
+                telemetrySocketErrorLogged = true;
+            }
             return;
         }
     }

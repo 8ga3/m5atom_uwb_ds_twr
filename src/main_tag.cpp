@@ -363,6 +363,8 @@ void setup()
 
     // boot_id は Wi-Fi を起動したあとで作る。esp_random() は RF が動いている間は
     // ハードウェアの真性乱数を返すので、起動をまたいで値が重なることは実質的にない。
+    // Wi-Fi が未設定だと RF が動いておらず、値は疑似乱数になりうる。ただし boot_id を
+    // 使うのはテレメトリと hello だけで、どちらも Wi-Fi が無ければ送られないので害はない。
     bootId = esp_random();
     Serial.printf("BOOT,boot_id=0x%08lX\n", static_cast<unsigned long>(bootId));
 
@@ -396,6 +398,9 @@ void setup()
 
 void loop()
 {
+    // 通常は何もしない。監視タスクを作れなかったときだけ、ここで接続状態を確認する。
+    wifiPollFromLoop();
+
     if (!configReady) {
         // 構成が無い間は測距に入れない。Wi-Fi やサーバーが後から立ち上がる場合に
         // 備えて、一定間隔で取得をやり直す。

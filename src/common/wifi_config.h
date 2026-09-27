@@ -56,6 +56,9 @@ static bool wifiConfigured = false;  // 資格情報があり接続を開始し�
 static std::atomic<bool> wifiConnected{false};
 static uint32_t wifiLastCheckMs     = 0;
 static uint32_t wifiLastReconnectMs = 0;
+// 監視タスクを作れず、退避策 (ライブラリの自動再接続 + 測距ループからの状態確認) で
+// 動いているか。wifiStartMonitor() を参照。
+static bool wifiMonitorFallback = false;
 
 // 使い終わったパスフレーズを RAM から消す。memset は「以降読まれない」と判断
 // されると最適化で削られることがあるので、volatile 経由で書く。
@@ -292,14 +295,31 @@ static void wifiMonitorTask(void*)
 }
 
 // 監視タスクを起動する。起動後は wifiMaintain() を他から呼ばない。
+//
+// タスクを作れなかった (ヒープ不足など) ときは退避策へ切り替える。監視タスクが無いと
+// 自動再接続も切ってあるので、一度切れた Wi-Fi から戻れず、wifiConnected も更新されない。
+// そこで Core 1 への割り込みは受け入れてライブラリの自動再接続を戻し、接続状態の確認は
+// 測距ループから wifiPollFromLoop() で行う。測距とテレメトリを止めないことを優先する。
 static bool wifiStartMonitor()
 {
     if (!wifiConfigured) return false;
     const BaseType_t created = xTaskCreatePinnedToCore(wifiMonitorTask, "wifi_monitor", WIFI_MONITOR_STACK, nullptr,
                                                        1, nullptr, WIFI_MONITOR_CORE);
-    Serial.printf("WIFI,monitor=%s,core=%d\n", (created == pdPASS) ? "started" : "failed",
-                  static_cast<int>(WIFI_MONITOR_CORE));
-    return (created == pdPASS);
+    if (created == pdPASS) {
+        Serial.printf("WIFI,monitor=started,core=%d\n", static_cast<int>(WIFI_MONITOR_CORE));
+        return true;
+    }
+    WiFi.setAutoReconnect(true);
+    wifiMonitorFallback = true;
+    Serial.println("WIFI,monitor=failed,fallback=auto_reconnect");
+    return false;
+}
+
+// 退避策で動いているときだけ、測距ループから接続状態を確認する。wifiMaintain() は
+// 1 秒に 1 回しか WiFi.status() を読まないので、毎回呼んでも測距を待たせない。
+static void wifiPollFromLoop()
+{
+    if (wifiMonitorFallback) wifiMaintain();
 }
 
 // 直近の監視結果。WiFi.status() を毎回呼ばずに済ませるためのキャッシュ。
