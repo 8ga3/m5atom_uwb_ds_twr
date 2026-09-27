@@ -47,6 +47,10 @@ struct AnchorStat {
     uint32_t ok;
     float distanceM;
     bool responded;  // 直近の 1 周期で応答したか (表示と LED 用)
+    // 前回の DS_RANGE_STAT 以降で、Final の遅延送信を予約した時点で送信時刻まで
+    // 残っていた時間の最小値。約 200 us を切ると TX_START_FAILED になる。
+    int32_t minMarginUs;
+    bool marginSeen;
 };
 AnchorStat anchorStats[UWB_ANCHOR_MAX] = {};
 size_t anchorIndex                     = 0;
@@ -139,22 +143,41 @@ static void runRanging()
     stat.responded = result.success;
     if (result.success) stat.distanceM = result.distanceM;
 
+    const int32_t marginUs = result.txMarginUs;
+    if ((marginUs != M5STAMP_UWB_TX_MARGIN_UNKNOWN) && (!stat.marginSeen || (marginUs < stat.minMarginUs))) {
+        stat.minMarginUs = marginUs;
+        stat.marginSeen  = true;
+    }
+
+    // 失敗は間引かずに毎回出す。累積統計だけでは失敗が周期的に起きているか
+    // (何回目・何 ms 時点で落ちたか) が分からないため。
+    if (!result.success) {
+        Serial.printf("DS_RANGE_FAIL,anchor=0x%04X,attempt=%lu,start_ms=%lu,error=%s",
+                      static_cast<unsigned>(anchorId), static_cast<unsigned long>(stat.attempts),
+                      static_cast<unsigned long>(lastRangeMs), uwb.lastErrorName());
+        if (marginUs != M5STAMP_UWB_TX_MARGIN_UNKNOWN) Serial.printf(",margin_us=%ld", static_cast<long>(marginUs));
+        Serial.print('\n');
+    }
+
     // アンカーごとに LOG_INTERVAL 回試行するたびに累積統計を出力する。
     if ((stat.attempts % LOG_INTERVAL) == 0) {
         const uint32_t failCount = stat.attempts - stat.ok;
         if (result.success) {
             Serial.printf(
-                "DS_RANGE_STAT,anchor=0x%04X,count=%lu,ok=%lu,fail=%lu,last=OK,seq=%u,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu\n",
+                "DS_RANGE_STAT,anchor=0x%04X,count=%lu,ok=%lu,fail=%lu,last=OK,seq=%u,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu",
                 static_cast<unsigned>(anchorId), static_cast<unsigned long>(stat.attempts),
                 static_cast<unsigned long>(stat.ok), static_cast<unsigned long>(failCount), result.sequence,
                 static_cast<long>(result.distanceMm), result.distanceM,
                 static_cast<unsigned long>(result.elapsedMs));
         } else {
-            Serial.printf("DS_RANGE_STAT,anchor=0x%04X,count=%lu,ok=%lu,fail=%lu,last=FAIL,seq=%u,error=%s\n",
+            Serial.printf("DS_RANGE_STAT,anchor=0x%04X,count=%lu,ok=%lu,fail=%lu,last=FAIL,seq=%u,error=%s",
                           static_cast<unsigned>(anchorId), static_cast<unsigned long>(stat.attempts),
                           static_cast<unsigned long>(stat.ok), static_cast<unsigned long>(failCount), result.sequence,
                           uwb.lastErrorName());
         }
+        if (stat.marginSeen) Serial.printf(",min_margin_us=%ld", static_cast<long>(stat.minMarginUs));
+        Serial.print('\n');
+        stat.marginSeen = false;
     }
 
     anchorIndex = (anchorIndex + 1) % tagConfig.anchorCount;

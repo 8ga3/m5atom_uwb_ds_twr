@@ -22,6 +22,11 @@ uint32_t failCount     = 0;
 uint32_t noPollCount   = 0;
 uint32_t noFinalCount  = 0;
 
+// 前回の成功時 DS_RESP_STAT 以降で、Response の遅延送信を予約した時点で送信時刻まで
+// 残っていた時間の最小値。
+int32_t minRespMarginUs = 0;
+bool respMarginSeen     = false;
+
 // 実際に届いた Poll フレームだけを試行回数として数える。無音のタグ (NO POLL) まで
 // 数えると、分母が際限なく膨らんでしまう。
 static uint32_t attemptCount()
@@ -75,6 +80,12 @@ static void runResponder()
 {
     // Poll/Final の交信を待ち、DS-TWR の測距結果を返す。
     const M5Stamp_UWBDSResponderResult result = uwb.respondDSRange(rangeConfig);
+
+    const int32_t marginUs = result.txMarginUs;
+    if ((marginUs != M5STAMP_UWB_TX_MARGIN_UNKNOWN) && (!respMarginSeen || (marginUs < minRespMarginUs))) {
+        minRespMarginUs = marginUs;
+        respMarginSeen  = true;
+    }
     if (!result.success) {
         // 無通信による受信タイムアウトは想定内であり、失敗とはカウントしない。
         if (result.error == M5Stamp_UWBError::RxTimeout) {
@@ -122,11 +133,14 @@ static void runResponder()
     // LOG_INTERVAL 回応答するごとに累積統計を出力する。
     if (responseCount % LOG_INTERVAL == 0) {
         Serial.printf(
-            "DS_RESP_STAT,count=%lu,fail=%lu,no_poll=%lu,no_final=%lu,last=OK,seq=%u,requester=0x%X,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu\n",
+            "DS_RESP_STAT,count=%lu,fail=%lu,no_poll=%lu,no_final=%lu,last=OK,seq=%u,requester=0x%X,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu",
             static_cast<unsigned long>(responseCount), static_cast<unsigned long>(failCount),
             static_cast<unsigned long>(noPollCount), static_cast<unsigned long>(noFinalCount), result.sequence,
             result.requester, static_cast<long>(result.distanceMm), result.distanceM,
             static_cast<unsigned long>(result.elapsedMs));
+        if (respMarginSeen) Serial.printf(",min_margin_us=%ld", static_cast<long>(minRespMarginUs));
+        Serial.print('\n');
+        respMarginSeen = false;
     }
 }
 
