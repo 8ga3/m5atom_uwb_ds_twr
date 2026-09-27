@@ -21,6 +21,8 @@ uint32_t responseCount = 0;
 uint32_t failCount     = 0;
 uint32_t noPollCount   = 0;
 uint32_t noFinalCount  = 0;
+// Poll 待ちの間に受けた、他アンカーとタグの交信のフレーム数。
+uint32_t otherFrameCount = 0;
 
 // 前回の成功時 DS_RESP_STAT 以降で、Response の遅延送信を予約した時点で送信時刻まで
 // 残っていた時間の最小値。
@@ -87,12 +89,24 @@ static void runResponder()
         respMarginSeen  = true;
     }
     if (!result.success) {
+        // Poll 待ちの段階で自機宛てでないフレーム (他アンカー宛ての Poll や、タグと他アンカーの
+        // 間の Response / Final / 距離通知) を受けると、ライブラリは RangeFrameMismatch を返す。
+        // 複数アンカー構成では毎周期起きる正常な動作なので、無通信と同じ扱いにする。
+        // txMarginUs は Response の送信を予約した時点で入るため、未設定なら Poll 待ちでの
+        // 不一致であり、Final 待ちでの不一致 (本当の異常) と区別できる。
+        const bool otherTraffic =
+            (result.error == M5Stamp_UWBError::RangeFrameMismatch) && (marginUs == M5STAMP_UWB_TX_MARGIN_UNKNOWN);
+
         // 無通信による受信タイムアウトは想定内であり、失敗とはカウントしない。
-        if (result.error == M5Stamp_UWBError::RxTimeout) {
+        if ((result.error == M5Stamp_UWBError::RxTimeout) || otherTraffic) {
             // Poll が全く受信できなかった場合 requester は 0 のまま。0 以外の値なら
             // Poll/Response の交信は始まったが Final フレームが届かなかったことを示す。
-            const bool noPoll = (result.requester == 0);
-            noPoll ? ++noPollCount : ++noFinalCount;
+            const bool noPoll = otherTraffic || (result.requester == 0);
+            if (otherTraffic) {
+                ++otherFrameCount;
+            } else {
+                noPoll ? ++noPollCount : ++noFinalCount;
+            }
 
             if (noPoll) {
                 // 通常の無通信区間なので何もせず、最後の測距結果を画面に残す。
@@ -133,9 +147,10 @@ static void runResponder()
     // LOG_INTERVAL 回応答するごとに累積統計を出力する。
     if (responseCount % LOG_INTERVAL == 0) {
         Serial.printf(
-            "DS_RESP_STAT,count=%lu,fail=%lu,no_poll=%lu,no_final=%lu,last=OK,seq=%u,requester=0x%X,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu",
+            "DS_RESP_STAT,count=%lu,fail=%lu,no_poll=%lu,no_final=%lu,other=%lu,last=OK,seq=%u,requester=0x%X,distance_mm=%ld,distance_m=%.3f,elapsed_ms=%lu",
             static_cast<unsigned long>(responseCount), static_cast<unsigned long>(failCount),
-            static_cast<unsigned long>(noPollCount), static_cast<unsigned long>(noFinalCount), result.sequence,
+            static_cast<unsigned long>(noPollCount), static_cast<unsigned long>(noFinalCount),
+            static_cast<unsigned long>(otherFrameCount), result.sequence,
             result.requester, static_cast<long>(result.distanceMm), result.distanceM,
             static_cast<unsigned long>(result.elapsedMs));
         if (respMarginSeen) Serial.printf(",min_margin_us=%ld", static_cast<long>(minRespMarginUs));
