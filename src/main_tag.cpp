@@ -28,8 +28,31 @@ bool configReady    = false;
 // 1 周期で全アンカーを 1 回ずつ測距する。各アンカーから見た Poll の間隔は
 // 単一アンカー時と同じ RANGE_CYCLE_MS のままで、順番に 1 台ずつ叩くこと自体が
 // TDMA として働くのでアンカー間の衝突が起きない。
-static constexpr uint32_t RANGE_CYCLE_MS = 200;
-static constexpr uint32_t LOG_INTERVAL   = 10;
+// 周期はビルドフラグ -D UWB_RANGE_CYCLE_MS=<ms> で変えられる。レートを詰めるときの
+// 検討は doc/multi-anchor-positioning-design.md の 5 章を参照。
+#ifndef UWB_RANGE_CYCLE_MS
+#define UWB_RANGE_CYCLE_MS 100
+#endif
+static constexpr uint32_t RANGE_CYCLE_MS = UWB_RANGE_CYCLE_MS;
+static_assert(RANGE_CYCLE_MS > 0, "UWB_RANGE_CYCLE_MS must be positive");
+
+// DS_RANGE_STAT はアンカーごとにおよそこの間隔で 1 行出す。試行回数で間引くと、
+// 周期を詰めたぶんだけ行数が増えてシリアルの送信が測距ループを止めうるので、
+// 周期から回数を逆算して時間あたりの行数を一定にする。
+static constexpr uint32_t STAT_LOG_PERIOD_MS = 2000;
+static constexpr uint32_t LOG_INTERVAL =
+    (STAT_LOG_PERIOD_MS / RANGE_CYCLE_MS) > 0 ? (STAT_LOG_PERIOD_MS / RANGE_CYCLE_MS) : 1;
+
+// 画面の書き換えの最短間隔。128x128 の全画面を送るのに数 ms かかり、その間は
+// 次のスロットが始められない。周期を詰めても書き換えはこの間隔までに抑える。
+static constexpr uint32_t DISPLAY_INTERVAL_MS = 200;
+uint32_t lastDisplayMs                        = 0;
+
+// requestDSRange() の各受信待ちの上限。実際の受信待ちはトランシーバーの
+// rxTimeoutUus で数 ms のうちに終わるので、これはその通知が来なかったときの保険。
+// 既定の 100 ms のままだと、その 1 回で周期がまるごと潰れる
+// (doc/multi-anchor-positioning-design.md 5.2)。
+static constexpr uint32_t TAG_HOST_TIMEOUT_MS = 10;
 
 // 1 スロットの長さはアンカー台数で決まる。台数はサーバーの構成で変わるので
 // 実行時に求める。
@@ -316,6 +339,9 @@ static void runRanging()
     // 1 周終わった。1 台でも応答していれば測距は生きている。
     bool anyResponse = false;
     for (size_t i = 0; i < tagConfig.anchorCount; ++i) anyResponse |= anchorStats[i].responded;
+    const uint32_t doneMs = millis();
+    if ((doneMs - lastDisplayMs) < DISPLAY_INTERVAL_MS) return;
+    lastDisplayMs = doneMs;
     updateStatus(anyResponse ? DisplayState::Ok : DisplayState::Waiting);
 }
 
@@ -389,14 +415,13 @@ void setup()
     wifiStartMonitor();
     Serial.printf("TASK,ranging_core=%d\n", xPortGetCoreID());
 
-    uwbReady = initUwb(UWB_SPI_FAST_HZ);
-    if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
-        // リンクが上がらなかったか、高速レートでの読み戻しに失敗した。ライブラリ
-        // 既定のクロックで 1 回だけ再試行し、際 (きわ) の基板でも測距できるようにする。
-        uwb.end();
-        uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
-    }
+    uwbReady = initUwbWithFallback();
+    // initUwb() はアンカーと共通の値を入れるので、タグだけの上書きはその後で行う。
+    // アンカー側の hostTimeoutMs は Poll を待つ窓の長さも兼ねるので、共通値は変えない。
+    rangeConfig.hostTimeoutMs = TAG_HOST_TIMEOUT_MS;
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
+    Serial.printf("RANGE_CYCLE,cycle_ms=%lu,host_timeout_ms=%lu\n", static_cast<unsigned long>(RANGE_CYCLE_MS),
+                  static_cast<unsigned long>(rangeConfig.hostTimeoutMs));
     Serial.printf("ANCHORS,count=%u\n", static_cast<unsigned>(tagConfig.anchorCount));
     setLedId(tagId);
     updateStatus(configReady ? DisplayState::Init : DisplayState::Fail);

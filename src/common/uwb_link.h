@@ -14,3 +14,7 @@ static constexpr uint16_t UWB_DEFAULT_PAN_ID = 0xDECA;
 // 応じて initUwb() を呼ぶ前に設定しておくこと。initUwb() はこれらに触れず、
 // DS-TWR のタイミングなど役割に依存しない項目だけを設定する。
 bool initUwb(uint32_t spiFastHz);
+
+// UWB_SPI_FAST_HZ から順に遅いレートで initUwb() を試し、最初に通ったところで
+// 止める。すべて失敗したら false。
+bool initUwbWithFallback();

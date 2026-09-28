@@ -25,6 +25,8 @@ PlatformIO で対象の環境を選び、ビルド・書き込みを行う。
 pio run -e atoms3-tag -t upload
 ```
 
+シリアルは 921600bps で出力する (`platformio.ini` の `monitor_speed` と同じ)。`pio device monitor` はこの値を使う。
+
 ### 2. ID の設定 (TAG / ANCHOR 共通)
 
 起動ボタンを押しながら電源を入れると、シリアルコンソールから ID 設定モードに入る。
@@ -73,6 +75,18 @@ TAG は起動時に `GET /api/v1/config` を 1 回呼び、巡回するアンカ
 - 周期の統計は Wi-Fi の有無に関係なく 10 秒ごとに `CYCLE_STAT,...` としてシリアルへ出る。周期の最小・最大・平均と、予定より遅れて始まったスロットの数 (`slot_late`) で、測距ループが止められていないかを確認できる。
 - 自己位置推定はまだ実装していないため、パケットの測位欄は常に「測位なし」で送る。
 - 受信側の確認にはサーバー側の `tools/dump_udp.py listen` が使える。
+
+### 7. 測距の周期 (TAG のみ)
+
+TAG は既定で 100ms (10Hz) ごとに全アンカーを 1 回ずつ測距する。1 周期をアンカーの台数で等分したスロットに
+1 台ずつ割り当てる。周期はビルドフラグで変えられる。
+
+```sh
+PLATFORMIO_BUILD_FLAGS="-D UWB_RANGE_CYCLE_MS=200" pio run -e atoms3-tag -t upload
+```
+
+10Hz より速くするには ANCHOR 側の設定変更が必要で、まだ対応していない
+([doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 5 章)。
 
 ## 状態表示
 
