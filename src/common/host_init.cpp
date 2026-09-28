@@ -6,6 +6,8 @@
 #include "status.h"
 #include "version.h"
 
+static constexpr uint32_t SERIAL_BAUD = 921600;
+
 void beginHost()
 {
     auto cfg = M5.config();
@@ -35,6 +37,8 @@ void beginSerial(const char* role)
     // 頻度を上げると予算の 5 分の 1 を占めるようになる。TX リングバッファを
     // 用意すれば Serial.printf は memcpy 相当に戻る。バッファサイズはドライバ
     // 停止中しか設定できないため、先に end() する (初回 begin() 前は no-op)。
+    // リングバッファが溢れれば結局ブロックするので、ボーレートも 921600bps に
+    // 上げて 1 行あたりの送出時間を 1ms 程度に縮める (SERIAL_BAUD)。
     Serial.end();
     Serial.setTxBufferSize(512);
 #else
@@ -56,7 +60,9 @@ void beginSerial(const char* role)
     Serial.setTxBufferSize(4096);
     Serial.setTxTimeoutMs(2);
 #endif
-    Serial.begin(115200);
+    // HWCDC (ESP32-S3) はボーレートを使わないが、UART0 の旧世代 ESP32 では
+    // これがそのまま送出速度になる。platformio.ini の monitor_speed と揃える。
+    Serial.begin(SERIAL_BAUD);
     // USB CDC はホストがポートを開くまで出力を捨てるので、少し待つ。
     const uint32_t serialWaitStart = millis();
     while (!Serial && (millis() - serialWaitStart) < 3000) {

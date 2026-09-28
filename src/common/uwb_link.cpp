@@ -35,12 +35,16 @@ bool initUwb(uint32_t spiFastHz)
     rangeConfig.responseRxAfterTxDelayUus      = 1500;
     rangeConfig.responseTxDelayUus             = 3000;
     // Final は Response の受信時刻から finalTxDelayUus 後に遅延送信する。受信完了の
-    // 検知から送信予約までに SPI 転送でおよそ 900 us かかり、予約は送信時刻の約 200 us
-    // 前までに済ませないと TX_START_FAILED になる。上流のライブラリは受信完了を
-    // delay(1) で待つので検知がさらに最大 1 tick 遅れ、その遅れがビルドごとに変わって
-    // 失敗率が 0〜100% の間で振れた。IRQ で待つフォーク版 (platformio.ini の lib_deps)
-    // なら 1800 でも 500 us 以上の余裕が残る。
-    rangeConfig.finalTxDelayUus                = 1800;
+    // 検知から送信予約までのホスト側の処理が間に合わず、予約が送信時刻の約 200 us
+    // 前を過ぎると TX_START_FAILED になる。上流のライブラリは受信完了を delay(1) で
+    // 待ち、SPI も初期化時の 2MHz のまま 1 バイトずつ転送するので、この処理に 1 ms
+    // 近くかかり、しかも待ちの遅れがビルドごとに変わって失敗率が 0〜100% の間で振れた。
+    // IRQ で待ち、SPI を 20MHz でまとめて転送するフォーク版 (platformio.ini の
+    // lib_deps) では、ESP32-S3 で 400〜450 us に収まる。1000 では余裕の最小が 300 us
+    // を切る周期があったので 1200 にする (doc/multi-anchor-positioning-design.md 5.2)。
+    // この値を使うのはタグだけで、アンカーの Final の受信窓 (Response 送信の
+    // 500〜3500 uus 後) にも収まる。
+    rangeConfig.finalTxDelayUus                = 1200;
     rangeConfig.finalRxAfterResponseTxDelayUus = 500;
     rangeConfig.resultRxAfterFinalTxDelayUus   = 500;
     rangeConfig.rxTimeoutUus                   = 3000;
@@ -64,12 +68,17 @@ bool initUwb(uint32_t spiFastHz)
     // deviceId() はプローブ中、バスがまだ spi_slow_hz で動いていたときに
     // キャッシュした値。begin() 内でドライバは spi_fast_hz に切り替わったので、
     // レジスタをもう一度読む: この読み戻しが壊れていれば、この配線は要求レート
-    // を維持できず、以降のすべての転送が見えないまま不安定になる。
-    const uint32_t fastId = uwb.readRawDeviceId();
-    if (fastId != M5STAMP_UWB_QM33120_DEVICE_ID) {
-        Serial.printf("UWB_SPI,result=FAIL,fast_hz=%lu,dev_id=0x%08lX\n", static_cast<unsigned long>(spiFastHz),
-                      static_cast<unsigned long>(fastId));
-        return false;
+    // を維持できず、以降のすべての転送が見えないまま不安定になる。タイミングの
+    // 際では失敗がときどきしか出ないので、1 回ではなく続けて何度も読む
+    // (1 回あたり 20 us 程度なので起動時間への影響はない)。
+    static constexpr int FAST_ID_READS = 64;
+    for (int i = 0; i < FAST_ID_READS; ++i) {
+        const uint32_t fastId = uwb.readRawDeviceId();
+        if (fastId != M5STAMP_UWB_QM33120_DEVICE_ID) {
+            Serial.printf("UWB_SPI,result=FAIL,fast_hz=%lu,read=%d,dev_id=0x%08lX\n",
+                          static_cast<unsigned long>(spiFastHz), i, static_cast<unsigned long>(fastId));
+            return false;
+        }
     }
     Serial.printf("UWB_SPI,result=OK,fast_hz=%lu\n", static_cast<unsigned long>(spiFastHz));
 
@@ -81,4 +90,21 @@ bool initUwb(uint32_t spiFastHz)
     Serial.printf("UWB_CONFIG,result=OK,ch=%u,plen=%u,rate=6M8,tx_power=0x%08lX\n", static_cast<unsigned>(phy.channel),
                   static_cast<unsigned>(phy.preambleLength), static_cast<unsigned long>(phy.txPower));
     return true;
+}
+
+bool initUwbWithFallback()
+{
+    static constexpr uint32_t rates[] = {UWB_SPI_FAST_HZ, UWB_SPI_FALLBACK_HZ, UWB_SPI_SAFE_HZ};
+    uint32_t lastTried = 0;
+    for (const uint32_t hz : rates) {
+        // -D UWB_SPI_FAST_HZ で下位のレートと同じ値にしたときに同じ試行を繰り返さない。
+        if (hz == lastTried) continue;
+        if (lastTried != 0) {
+            // 前のレートでリンクが上がらなかったか、読み戻しに失敗した。
+            uwb.end();
+        }
+        lastTried = hz;
+        if (initUwb(hz)) return true;
+    }
+    return false;
 }

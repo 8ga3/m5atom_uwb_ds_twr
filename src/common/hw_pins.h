@@ -71,11 +71,15 @@ static constexpr uint8_t BTN_MODE = INPUT;
 // ドライバが 2MHz のプローブレートを抜けた後に使う SPI クロック。QM33120 自体は
 // 38MHz まで対応するので、制限はホスト側バスにある: 旧世代 ESP32 では UWB の
 // 全信号が GPIO マトリクスを経由するため、全二重転送は 20MHz が上限になる。
-// 20MHz は 80MHz の APB クロックをちょうど割り切る値 (80/4) でもあり、ライブラリ
-// 既定の 16MHz (80/5) より都合が良い。ESP32-S3 側はこの点で余裕がある。
-// 別のレートを試すときは -D UWB_SPI_FAST_HZ=<hz> で上書きする。init() は指定
-// レートでの読み戻しが壊れていればライブラリ既定値へフォールバックする。
+// 20MHz は 80MHz の APB クロックをちょうど割り切る値 (80/4) でもある。
+// 別のレートを試すときは -D UWB_SPI_FAST_HZ=<hz> で上書きする。
+//
+// 上流のライブラリは初期化後に高速レートへ切り替えておらず、フォークで直すまでは
+// どのボードも実際には 2MHz で動いていた (doc/multi-anchor-positioning-design.md 5.3)。
+// そのため initUwbWithFallback() は指定レートでの読み戻しが壊れていたら
+// UWB_SPI_FALLBACK_HZ、それも駄目なら従来どおりの UWB_SPI_SAFE_HZ で初期化し直す。
 #ifndef UWB_SPI_FAST_HZ
 #define UWB_SPI_FAST_HZ 20000000
 #endif
-static constexpr uint32_t UWB_SPI_FAST_FALLBACK_HZ = 16000000;
+static constexpr uint32_t UWB_SPI_FALLBACK_HZ = 10000000;
+static constexpr uint32_t UWB_SPI_SAFE_HZ     = 2000000;

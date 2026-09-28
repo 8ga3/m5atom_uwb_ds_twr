@@ -10,7 +10,8 @@
 #include "common/uwb_link.h"
 
 static constexpr uint32_t LOG_INTERVAL = 20;
-// タグ側の測距周期は 200ms、受信ウィンドウは 100ms しかないため、交信の間に無通信の
+// タグは周期 (既定 100ms) ごとに 1 回しかこのアンカーを呼ばず、受信ウィンドウ
+// (hostTimeoutMs = 100ms) の中に Poll が来ないことも多いので、交信の間に無通信の
 // 間隔ができるのは正常。タグが本当にいなくなったと判断するまで、最後の結果を
 // この時間だけ画面に残す。
 static constexpr uint32_t IDLE_GRACE_MS = 1000;
@@ -180,13 +181,7 @@ void setup()
     rangeConfig.initiatorAddress = 0x0000;
     rangeConfig.responderAddress = anchorId;
 
-    uwbReady = initUwb(UWB_SPI_FAST_HZ);
-    if (!uwbReady && (UWB_SPI_FAST_HZ != UWB_SPI_FAST_FALLBACK_HZ)) {
-        // リンクが上がらなかったか、高速レートでの読み戻しに失敗した。ライブラリ
-        // 既定のクロックで 1 回だけ再試行し、際 (きわ) の基板でも測距できるようにする。
-        uwb.end();
-        uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
-    }
+    uwbReady = initUwbWithFallback();
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
     setLedId(anchorId);
     updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwb.lastError()));
