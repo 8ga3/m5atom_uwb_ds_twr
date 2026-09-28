@@ -241,6 +241,7 @@ const char* errorShortName(M5Stamp_UWBError error)
         case M5Stamp_UWBError::RangeFrameMismatch:    return "FRMMIS";
         case M5Stamp_UWBError::InvalidArgument:       return "ARG";
         case M5Stamp_UWBError::Busy:                  return "BUSY";
+        case M5Stamp_UWBError::IrqLineFault:          return "IRQ";
         default:                                      return "UNK";
     }
 }

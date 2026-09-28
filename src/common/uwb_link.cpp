@@ -7,6 +7,16 @@
 M5Stamp_UWB uwb;
 M5Stamp_UWBDSRangeConfig rangeConfig;
 
+// IRQ 線の検査結果を出す。idle は割り込みをすべて禁止してホストのプルアップを付けたとき
+// (正常なら 0)、active はタイマーの割り込みを立ててプルダウンを付けたとき (正常なら 1)
+// の読み値で、-1 は読んでいない。
+static void logIrqCheck(const char* result)
+{
+    const M5Stamp_UWBIrqCheck check = uwb.irqCheck();
+    Serial.printf("UWB_IRQ,result=%s,pin=%d,idle=%d,active=%d\n", result, UWB_PIN_IRQ,
+                  static_cast<int>(check.idleLevel), static_cast<int>(check.activeLevel));
+}
+
 bool initUwb(uint32_t spiFastHz)
 {
     // Stamp-UWB から QM33120 UWB トランシーバーへの接続設定。
@@ -75,9 +85,16 @@ bool initUwb(uint32_t spiFastHz)
 
     if (!uwb.begin(config, phy)) {
         Serial.printf("UWB_BEGIN,result=FAIL,error=%s\n", uwb.lastErrorName());
+        if (uwb.lastError() == M5Stamp_UWBError::IrqLineFault) {
+            // QM33120 が IRQ 線を駆動していない。断線 (はんだ付けの不良など) か
+            // ショートで、SPI の速度とは関係がない。
+            logIrqCheck("FAIL");
+            return false;
+        }
         Serial.printf("UWB_RAW_ID,dev_id=0x%08lX\n", static_cast<unsigned long>(uwb.readRawDeviceId()));
         return false;
     }
+    logIrqCheck("OK");
 
     const uint32_t devId = uwb.deviceId();
     Serial.printf("UWB_ID,dev_id=0x%08lX,chip=%s\n", static_cast<unsigned long>(devId), uwb.chipName());
@@ -126,6 +143,11 @@ bool initUwbWithFallback()
         }
         lastTried = hz;
         if (initUwb(hz)) return true;
+        // IRQ 線の故障は速度を下げても直らない。IRQ を使わない待ち方に切り替えて
+        // 動かし続けることもできるが、故障に気付かないまま測距のタイミングが
+        // 崩れるので、ここで止めてエラー表示にする
+        // (doc/multi-anchor-positioning-design.md 5.3)。
+        if (uwb.lastError() == M5Stamp_UWBError::IrqLineFault) return false;
     }
     return false;
 }
