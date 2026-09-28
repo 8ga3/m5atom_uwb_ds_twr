@@ -75,8 +75,8 @@ void beginSerial(const char* role)
     Serial.printf("FW_VERSION,version=%s\n", FW_VERSION);
     Serial.printf("ROLE,mode=%s\n", role);
     Serial.printf("TWR_MODE,mode=DS-TWR\n");
-    Serial.printf("HOST,board=%d,display=%d,led=%d\n", static_cast<int>(M5.getBoard()), hasDisplay ? 1 : 0,
-                  hasLed ? 1 : 0);
+    Serial.printf("HOST,board=%d,display=%d,led=%d,display_push=%s\n", static_cast<int>(M5.getBoard()),
+                  hasDisplay ? 1 : 0, hasLed ? 1 : 0, displayPushMode());
 }
 
 bool readBootButtonHeld()

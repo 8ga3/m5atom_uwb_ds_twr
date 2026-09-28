@@ -16,9 +16,65 @@ namespace {
 uint32_t lastLedColor = UINT32_MAX;
 
 // 画面と同じ大きさのオフスクリーン描画先。initStatusHardware() で確保する。
-// 128x128 の 16 ビット色で 32 KB 使う。
-M5Canvas frameCanvas;
-bool frameCanvasReady = false;
+// 128x128 の 16 ビット色で 1 面 32 KB 使う。
+//
+// 画面へ送る (pushSprite) のは Core 0 の displayTask に任せる。全画面の転送に
+// 7 ms 前後かかり、測距ループ (Core 1) で送ると 30Hz の 1 スロット (8 ms) に
+// 収まらず、次のスロットの開始が遅れていた (doc/multi-anchor-positioning-design.md
+// 5.2)。LCD は SPI3、UWB は SPI2 で別のバスなので、転送中も測距は止まらない。
+//
+// 送っている最中の面に Core 1 が次の画面を描かないよう、2 面を持つ。Core 1 は
+// 常に裏面 (backCanvas) に描き、タスクは表面と裏面を入れ替えてから表面を送る。
+// 送信中にもう 1 枚描き終えたら、送り終えたあとで最新の 1 枚だけを送る。
+M5Canvas frameCanvas[2];
+M5Canvas* backCanvas  = &frameCanvas[0];
+M5Canvas* frontCanvas = &frameCanvas[1];
+bool frameCanvasReady = false;  // 裏面を確保できた
+TaskHandle_t displayTask = nullptr;  // null なら Core 1 で直接送る
+
+// 以下の 3 つと面の入れ替えは displayMux の中でだけ読み書きする。
+portMUX_TYPE displayMux = portMUX_INITIALIZER_UNLOCKED;
+bool frameDrawing = false;  // Core 1 が裏面に描いている最中
+bool framePending = false;  // 描き終えてまだ送っていない裏面がある
+bool framePushing = false;  // タスクが表面を送っている最中
+
+constexpr uint32_t DISPLAY_TASK_STACK = 4096;
+constexpr BaseType_t DISPLAY_TASK_CORE = 0;
+
+void displayTaskMain(void*)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        for (;;) {
+            M5Canvas* toPush = nullptr;
+            portENTER_CRITICAL(&displayMux);
+            // Core 1 が描いている最中なら入れ替えない。描き終えた時点で
+            // endDisplayFrame() がもう一度起こす。
+            if (framePending && !frameDrawing) {
+                M5Canvas* const drawn = backCanvas;
+                backCanvas            = frontCanvas;
+                frontCanvas           = drawn;
+                framePending          = false;
+                framePushing          = true;
+                toPush                = drawn;
+            } else {
+                framePushing = false;
+            }
+            portEXIT_CRITICAL(&displayMux);
+            if (toPush == nullptr) break;
+            toPush->pushSprite(&M5.Display, 0, 0);
+        }
+    }
+}
+
+bool initCanvas(M5Canvas& canvas)
+{
+    // 画面へ送るときに色深度を変換しなくて済むよう、パネルと同じ 16 ビット色にする。
+    canvas.setColorDepth(16);
+    if (canvas.createSprite(M5.Display.width(), M5.Display.height()) == nullptr) return false;
+    canvas.setTextSize(2);
+    return true;
+}
 
 #if defined(UWB_ATOM_MATRIX)
 // 3x5 ドットの数字。各行の下位 3 ビットが左から右の列に対応する。5x5 の
@@ -105,10 +161,15 @@ void initStatusHardware()
     hasDisplay = (M5.getDisplayCount() > 0);
     if (hasDisplay) {
         M5.Display.setTextSize(2);
-        // 画面へ送るときに色深度を変換しなくて済むよう、パネルと同じ 16 ビット色にする。
-        frameCanvas.setColorDepth(16);
-        frameCanvasReady = (frameCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr);
-        if (frameCanvasReady) frameCanvas.setTextSize(2);
+        frameCanvasReady = initCanvas(*backCanvas);
+        // 2 面目とタスクが用意できたときだけ Core 0 で送る。どちらかが駄目なら
+        // 1 面を Core 1 で直接送る (測距の周期は揺れるが表示は正しい)。
+        if (frameCanvasReady && initCanvas(*frontCanvas)) {
+            const BaseType_t created = xTaskCreatePinnedToCore(displayTaskMain, "display", DISPLAY_TASK_STACK,
+                                                               nullptr, 1, &displayTask, DISPLAY_TASK_CORE);
+            if (created != pdPASS) displayTask = nullptr;
+        }
+        if (displayTask == nullptr) frontCanvas->deleteSprite();
     }
     // 画面があるのは AtomS3 (LED非搭載)、無いのは Lite 系 (LED搭載)。
     hasLed = !hasDisplay;
@@ -120,10 +181,23 @@ void initStatusHardware()
     }
 }
 
+const char* displayPushMode()
+{
+    if (!hasDisplay) return "none";
+    return (displayTask != nullptr) ? "task" : "direct";
+}
+
 lgfx::LovyanGFX& beginDisplayFrame()
 {
-    lgfx::LovyanGFX& gfx = frameCanvasReady ? static_cast<lgfx::LovyanGFX&>(frameCanvas)
-                                            : static_cast<lgfx::LovyanGFX&>(M5.Display);
+    M5Canvas* canvas = nullptr;
+    if (frameCanvasReady) {
+        portENTER_CRITICAL(&displayMux);
+        frameDrawing = true;
+        canvas       = backCanvas;
+        portEXIT_CRITICAL(&displayMux);
+    }
+    lgfx::LovyanGFX& gfx =
+        (canvas != nullptr) ? static_cast<lgfx::LovyanGFX&>(*canvas) : static_cast<lgfx::LovyanGFX&>(M5.Display);
     gfx.fillScreen(TFT_BLACK);
     gfx.setCursor(0, 0);
     return gfx;
@@ -131,7 +205,18 @@ lgfx::LovyanGFX& beginDisplayFrame()
 
 void endDisplayFrame()
 {
-    if (frameCanvasReady) frameCanvas.pushSprite(&M5.Display, 0, 0);
+    if (!frameCanvasReady) return;
+    if (displayTask == nullptr) {
+        backCanvas->pushSprite(&M5.Display, 0, 0);
+        return;
+    }
+    portENTER_CRITICAL(&displayMux);
+    frameDrawing       = false;
+    framePending       = true;
+    const bool wake    = !framePushing;
+    portEXIT_CRITICAL(&displayMux);
+    // 送信中ならタスクが送り終えたあとで拾うので、起こさなくてよい。
+    if (wake) xTaskNotifyGive(displayTask);
 }
 
 const char* errorShortName(M5Stamp_UWBError error)
