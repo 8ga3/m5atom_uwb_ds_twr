@@ -172,29 +172,30 @@ static void updateStatus(DisplayState state)
     updateLed(state);
     if (!hasDisplay) return;
 
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextColor(stateColor(state));
-    M5.Display.println("UWB TAG");
+    lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    gfx.setTextColor(stateColor(state));
+    gfx.println("UWB TAG");
 
     if (!uwbReady) {
-        M5.Display.println("STA:FAIL");
-        M5.Display.printf("E:%s\n", errorShortName(uwb.lastError()));
+        gfx.println("STA:FAIL");
+        gfx.printf("E:%s\n", errorShortName(uwb.lastError()));
+        endDisplayFrame();
         return;
     }
 
-    M5.Display.setTextColor(WHITE);
-    M5.Display.printf("ID:%u\n", static_cast<unsigned>(tagId));
+    gfx.setTextColor(WHITE);
+    gfx.printf("ID:%u\n", static_cast<unsigned>(tagId));
 
     // Wi-Fi の状態。OFF = 未設定、-- = 設定済みだが接続できていない、OK = 接続中。
-    M5.Display.setTextColor(wifiIsConnected() ? GREEN : YELLOW);
-    M5.Display.printf("W:%s\n", wifiShortState());
+    gfx.setTextColor(wifiIsConnected() ? GREEN : YELLOW);
+    gfx.printf("W:%s\n", wifiShortState());
 
     if (!configReady) {
         // 構成が無い状態は測距そのものが始められないので、距離の代わりに
         // その旨だけを出す。
-        M5.Display.setTextColor(RED);
-        M5.Display.println("CFG:NONE");
+        gfx.setTextColor(RED);
+        gfx.println("CFG:NONE");
+        endDisplayFrame();
         return;
     }
 
@@ -202,16 +203,17 @@ static void updateStatus(DisplayState state)
     // 3 行を引くと残りは 5 行。入りきらない台数のときは画面の下端で打ち切るので、
     // 全台分はシリアルログで見る。
     for (size_t i = 0; (i < tagConfig.anchorCount)
-                       && ((M5.Display.getCursorY() + M5.Display.fontHeight()) <= M5.Display.height());
+                       && ((gfx.getCursorY() + gfx.fontHeight()) <= gfx.height());
          ++i) {
         const AnchorStat& stat = anchorStats[i];
-        M5.Display.setTextColor(stat.responded ? GREEN : YELLOW);
+        gfx.setTextColor(stat.responded ? GREEN : YELLOW);
         if (stat.responded) {
-            M5.Display.printf("%u:%.2f\n", static_cast<unsigned>(tagConfig.anchors[i].id), stat.distanceM);
+            gfx.printf("%u:%.2f\n", static_cast<unsigned>(tagConfig.anchors[i].id), stat.distanceM);
         } else {
-            M5.Display.printf("%u:----\n", static_cast<unsigned>(tagConfig.anchors[i].id));
+            gfx.printf("%u:----\n", static_cast<unsigned>(tagConfig.anchors[i].id));
         }
     }
+    endDisplayFrame();
 }
 
 // Poll の宛先を 1 台ずつ切り替えながら全アンカーを巡回する。1 スロットにつき

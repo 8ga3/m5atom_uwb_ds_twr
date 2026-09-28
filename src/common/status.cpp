@@ -15,6 +15,11 @@ uint16_t idRangeMax = 0;
 namespace {
 uint32_t lastLedColor = UINT32_MAX;
 
+// 画面と同じ大きさのオフスクリーン描画先。initStatusHardware() で確保する。
+// 128x128 の 16 ビット色で 32 KB 使う。
+M5Canvas frameCanvas;
+bool frameCanvasReady = false;
+
 #if defined(UWB_ATOM_MATRIX)
 // 3x5 ドットの数字。各行の下位 3 ビットが左から右の列に対応する。5x5 の
 // 中央 3 列に描く。
@@ -100,6 +105,10 @@ void initStatusHardware()
     hasDisplay = (M5.getDisplayCount() > 0);
     if (hasDisplay) {
         M5.Display.setTextSize(2);
+        // 画面へ送るときに色深度を変換しなくて済むよう、パネルと同じ 16 ビット色にする。
+        frameCanvas.setColorDepth(16);
+        frameCanvasReady = (frameCanvas.createSprite(M5.Display.width(), M5.Display.height()) != nullptr);
+        if (frameCanvasReady) frameCanvas.setTextSize(2);
     }
     // 画面があるのは AtomS3 (LED非搭載)、無いのは Lite 系 (LED搭載)。
     hasLed = !hasDisplay;
@@ -109,6 +118,20 @@ void initStatusHardware()
         rgbLed.clear();
         rgbLed.show();
     }
+}
+
+lgfx::LovyanGFX& beginDisplayFrame()
+{
+    lgfx::LovyanGFX& gfx = frameCanvasReady ? static_cast<lgfx::LovyanGFX&>(frameCanvas)
+                                            : static_cast<lgfx::LovyanGFX&>(M5.Display);
+    gfx.fillScreen(TFT_BLACK);
+    gfx.setCursor(0, 0);
+    return gfx;
+}
+
+void endDisplayFrame()
+{
+    if (frameCanvasReady) frameCanvas.pushSprite(&M5.Display, 0, 0);
 }
 
 const char* errorShortName(M5Stamp_UWBError error)
@@ -207,17 +230,17 @@ void showIdSetup(const char* text, bool error)
     setLed(255, 0, 255);
     if (!hasDisplay) return;
 
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextColor(error ? RED : MAGENTA);
-    M5.Display.println("SET ID");
-    M5.Display.setTextColor(WHITE);
+    lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    gfx.setTextColor(error ? RED : MAGENTA);
+    gfx.println("SET ID");
+    gfx.setTextColor(WHITE);
     // ANCHOR の ID_MAX は 5 桁あり "min-max" を 1 行に収めると欠ける。TAG は
     // 3 桁で余裕があるが、共通化のため両者とも 2 行表示に揃える。
-    M5.Display.printf("%u-\n%u\n", static_cast<unsigned>(idRangeMin), static_cast<unsigned>(idRangeMax));
-    M5.Display.println("SERIAL");
-    M5.Display.setTextColor(error ? RED : GREEN);
-    M5.Display.printf(">%s\n", text);
+    gfx.printf("%u-\n%u\n", static_cast<unsigned>(idRangeMin), static_cast<unsigned>(idRangeMax));
+    gfx.println("SERIAL");
+    gfx.setTextColor(error ? RED : GREEN);
+    gfx.printf(">%s\n", text);
+    endDisplayFrame();
 }
 
 void showWifiSetup(const char* field, const char* text, bool error)
@@ -225,15 +248,15 @@ void showWifiSetup(const char* field, const char* text, bool error)
     setLed(255, 0, 255);
     if (!hasDisplay) return;
 
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextColor(error ? RED : MAGENTA);
-    M5.Display.println("SET WIFI");
-    M5.Display.setTextColor(WHITE);
-    M5.Display.println(field);
-    M5.Display.println("SERIAL");
-    M5.Display.setTextColor(error ? RED : GREEN);
-    M5.Display.printf(">%s\n", text);
+    lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    gfx.setTextColor(error ? RED : MAGENTA);
+    gfx.println("SET WIFI");
+    gfx.setTextColor(WHITE);
+    gfx.println(field);
+    gfx.println("SERIAL");
+    gfx.setTextColor(error ? RED : GREEN);
+    gfx.printf(">%s\n", text);
+    endDisplayFrame();
 }
 
 void showServerSetup(const char* field, const char* text, bool error)
@@ -241,13 +264,13 @@ void showServerSetup(const char* field, const char* text, bool error)
     setLed(255, 0, 255);
     if (!hasDisplay) return;
 
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextColor(error ? RED : MAGENTA);
-    M5.Display.println("SET SRV");
-    M5.Display.setTextColor(WHITE);
-    M5.Display.println(field);
-    M5.Display.println("SERIAL");
-    M5.Display.setTextColor(error ? RED : GREEN);
-    M5.Display.printf(">%s\n", text);
+    lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    gfx.setTextColor(error ? RED : MAGENTA);
+    gfx.println("SET SRV");
+    gfx.setTextColor(WHITE);
+    gfx.println(field);
+    gfx.println("SERIAL");
+    gfx.setTextColor(error ? RED : GREEN);
+    gfx.printf(">%s\n", text);
+    endDisplayFrame();
 }

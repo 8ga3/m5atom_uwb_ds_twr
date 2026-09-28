@@ -45,33 +45,33 @@ static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs
 
     const uint16_t color = stateColor(state);
 
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextColor(color);
-    M5.Display.println("UWB ANCHOR");
+    lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    gfx.setTextColor(color);
+    gfx.println("UWB ANCHOR");
     // 自機 ID は設定時と同じ 10 進で出す。UWB が上がっていないときは ID より
     // 故障の方が知りたいので、その行を潰して FAIL を出す。
     if (uwbReady) {
-        M5.Display.printf("ID:%u\n", static_cast<unsigned>(anchorId));
+        gfx.printf("ID:%u\n", static_cast<unsigned>(anchorId));
     } else {
-        M5.Display.println("STA:FAIL");
+        gfx.println("STA:FAIL");
     }
 
     if (state == DisplayState::Ok) {
-        M5.Display.printf("D:%.3fm\n", distanceM);
-        M5.Display.setTextColor(WHITE);
-        M5.Display.printf("T:%lums\n", static_cast<unsigned long>(elapsedMs));
+        gfx.printf("D:%.3fm\n", distanceM);
+        gfx.setTextColor(WHITE);
+        gfx.printf("T:%lums\n", static_cast<unsigned long>(elapsedMs));
     } else {
-        M5.Display.println("D:----");
-        M5.Display.printf("E:%s\n", errorText);
-        M5.Display.setTextColor(WHITE);
+        gfx.println("D:----");
+        gfx.printf("E:%s\n", errorText);
+        gfx.setTextColor(WHITE);
     }
 
     // 測距してきたタグの ID。タグは当面 1 台だが、複数台になったときに
     // どのタグと交信しているかはここでしか分からない。
-    M5.Display.printf("TG:%u\n", static_cast<unsigned>(requester));
-    M5.Display.printf("OK:%lu/%lu\n", static_cast<unsigned long>(responseCount),
+    gfx.printf("TG:%u\n", static_cast<unsigned>(requester));
+    gfx.printf("OK:%lu/%lu\n", static_cast<unsigned long>(responseCount),
                       static_cast<unsigned long>(attemptCount()));
+    endDisplayFrame();
 }
 
 DisplayState lastDisplayState = DisplayState::Init;

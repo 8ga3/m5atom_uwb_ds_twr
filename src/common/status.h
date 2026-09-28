@@ -2,6 +2,7 @@
 #pragma once
 
 #include <Adafruit_NeoPixel.h>
+#include <M5GFX.h>
 #include <M5Stamp_UWB.h>
 
 extern Adafruit_NeoPixel rgbLed;
@@ -21,6 +22,15 @@ enum class DisplayState { Init, Ok, Waiting, Fail };
 
 // M5.begin() の後に呼び、hasDisplay/hasLed を確定させて必要な方を初期化する。
 void initStatusHardware();
+
+// 画面 1 枚ぶんの描画を始める。返した描画先は黒で消去済みで、カーソルは左上にある。
+// 描き終えたら必ず endDisplayFrame() を呼ぶ。hasDisplay が true のときだけ呼ぶこと。
+// 描画先は画面と同じ大きさのオフスクリーンのキャンバスで、endDisplayFrame() で
+// まとめて画面へ送る。画面へ直接 fillScreen() してから文字を描くと、消去から
+// 描き終わるまでの黒い画面が毎回見えてちらつくため。キャンバスのメモリを確保
+// できなかったときは画面そのものを返し、従来どおり直接描く。
+lgfx::LovyanGFX& beginDisplayFrame();
+void endDisplayFrame();
 
 // 128x128 の画面はテキストサイズ 2 だと 1 行 10 文字程度しか入らないため、
 // ライブラリのエラー名はそのまま出すには長すぎる。
