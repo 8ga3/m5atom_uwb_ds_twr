@@ -85,8 +85,8 @@ TAG は既定で 100ms (10Hz) ごとに全アンカーを 1 回ずつ測距す�
 PLATFORMIO_BUILD_FLAGS="-D UWB_RANGE_CYCLE_MS=200" pio run -e atoms3-tag -t upload
 ```
 
-アンカー 4 台では 30Hz (`UWB_RANGE_CYCLE_MS=33`) まで失敗なく測距できることを確かめた。スロットはミリ秒単位に
-切り捨てるので、周期は 32ms になる
+アンカー 4 台で 30Hz (`UWB_RANGE_CYCLE_MS=33`) でも測距を続けられることを確かめた。失敗は 4 台 × 1740 回で 0 回、
+4 台 × 1980 回で 1 回 (`RX_TIMEOUT`) だった。スロットはミリ秒単位に切り捨てるので、周期は 32ms になる
 ([doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 5 章)。
 
 TAG と ANCHOR の DS-TWR のタイミングは組で決めてある。ANCHOR だけを新しいファームウェアにすると、古い TAG は
