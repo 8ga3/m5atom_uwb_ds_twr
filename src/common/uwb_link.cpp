@@ -144,26 +144,3 @@ bool initUwb(uint32_t spiFastHz)
     initError = M5Stamp_UWBError::Ok;
     return true;
 }
-
-bool initUwbWithFallback()
-{
-    static constexpr uint32_t rates[] = {UWB_SPI_FAST_HZ, UWB_SPI_FALLBACK_HZ, UWB_SPI_SAFE_HZ};
-    uint32_t lastTried = 0;
-    for (const uint32_t hz : rates) {
-        // 前に試したレートより遅いものだけを試す。-D UWB_SPI_FAST_HZ で下位のレート以下を
-        // 指定したときに、同じ試行を繰り返したり、指定より速いレートへ上げたりしない。
-        if ((lastTried != 0) && (hz >= lastTried)) continue;
-        if (lastTried != 0) {
-            // 前のレートでリンクが上がらなかったか、読み戻しに失敗した。
-            uwb.end();
-        }
-        lastTried = hz;
-        if (initUwb(hz)) return true;
-        // IRQ 線の故障は速度を下げても直らない。IRQ を使わない待ち方に切り替えて
-        // 動かし続けることもできるが、故障に気付かないまま測距のタイミングが
-        // 崩れるので、ここで止めてエラー表示にする
-        // (doc/multi-anchor-positioning-design.md 5.3)。
-        if (initError == M5Stamp_UWBError::IrqLineFault) return false;
-    }
-    return false;
-}
