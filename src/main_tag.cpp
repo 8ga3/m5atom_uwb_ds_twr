@@ -1,4 +1,4 @@
-// M5Atom S3 / AtomS3 Lite / Atom Lite 用 UWB DS-TWR TAG サンプルコード
+// M5Atom S3 / AtomS3 Lite / Atom Lite / Atom Matrix 用 UWB DS-TWR TAG サンプルコード
 
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
@@ -301,6 +301,9 @@ static void runRanging()
         stat.marginSeen = false;
     }
 
+    // LED の書き換えは交信を終えたこの位置で行い、スロットの開始を遅らせない。
+    serviceLed();
+
     anchorIndex = (anchorIndex + 1) % tagConfig.anchorCount;
     if (anchorIndex != 0) return;
 
@@ -393,6 +396,7 @@ void setup()
     }
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
     Serial.printf("ANCHORS,count=%u\n", static_cast<unsigned>(tagConfig.anchorCount));
+    setLedId(tagId);
     updateStatus(configReady ? DisplayState::Init : DisplayState::Fail);
 }
 
@@ -415,13 +419,17 @@ void loop()
             // 塗り直すとちらつくうえ、状態は何も変わっていない。
             if (!configReady) updateStatus(DisplayState::Fail);
         }
+        serviceLed();
         delay(100);
         return;
     }
 
     if (uwbReady) {
+        // 測距中の LED の書き換えは runRanging() の中で行う。
         runRanging();
     } else {
-        delay(1000);
+        // LED の ID 表示を切り替え続けられるよう、短い間隔で回す。
+        serviceLed();
+        delay(100);
     }
 }

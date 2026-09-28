@@ -1,4 +1,4 @@
-// M5Atom S3 / AtomS3 Lite / Atom Lite 用 UWB DS-TWR ANCHOR サンプルコード
+// M5Atom S3 / AtomS3 Lite / Atom Lite / Atom Matrix 用 UWB DS-TWR ANCHOR サンプルコード
 
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
@@ -188,6 +188,7 @@ void setup()
         uwbReady = initUwb(UWB_SPI_FAST_FALLBACK_HZ);
     }
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
+    setLedId(anchorId);
     updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwb.lastError()));
 }
 
@@ -196,6 +197,10 @@ void loop()
     if (uwbReady) {
         runResponder();
     } else {
-        delay(1000);
+        // LED の ID 表示を切り替え続けられるよう、短い間隔で回す。
+        delay(100);
     }
+    // respondDSRange() から戻った直後に LED を書き換える。測距に成功した直後なら、
+    // タグが次にこのアンカーへ Poll を送るのは 1 周期後なので取りこぼさない。
+    serviceLed();
 }
