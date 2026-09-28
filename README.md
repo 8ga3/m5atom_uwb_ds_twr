@@ -3,7 +3,7 @@
 M5Stamp-UWB (QM33120) を搭載した M5Atom シリーズで、DS-TWR (Double-Sided Two-Way Ranging) による UWB 測距を行うファームウェア。
 TAG (測距を要求する側) と ANCHOR (応答する側) の 2 つの役割を、共通コードを共有しつつ 1 つのリポジトリにまとめている。
 
-対応ボードは AtomS3 / AtomS3 Lite / Atom Lite / Atom Matrix。すべて M5Stamp-UWB ブレイクアウトと組み合わせて使う。
+対応ボードは AtomS3 / AtomS3R / AtomS3 Lite / Atom Lite / Atom Matrix。すべて M5Stamp-UWB ブレイクアウトと組み合わせて使う。
 
 バージョン: `0.1.0-dev`
 
@@ -16,7 +16,7 @@ TAG (測距を要求する側) と ANCHOR (応答する側) の 2 つの役割�
 - `atoms3-anchor` / `atom-anchor` / `atom-matrix-anchor`: ANCHOR
 - `atoms3-tag` / `atom-tag` / `atom-matrix-tag`: TAG
 
-`atoms3-*` は AtomS3 と AtomS3 Lite の共用、`atom-*` は Atom Lite 用、`atom-matrix-*` は Atom Matrix 用。
+`atoms3-*` は AtomS3 / AtomS3R / AtomS3 Lite の共用、`atom-*` は Atom Lite 用、`atom-matrix-*` は Atom Matrix 用。
 Atom Lite と Atom Matrix は実行時に見分けられないため、ビルドを分けている。
 
 PlatformIO で対象の環境を選び、ビルド・書き込みを行う。
@@ -76,7 +76,7 @@ TAG は起動時に `GET /api/v1/config` を 1 回呼び、巡回するアンカ
 
 ## 状態表示
 
-AtomS3 は LCD に状態を表示する。画面のない AtomS3 Lite / Atom Lite は RGB LED 1 個の色で状態を表す。
+AtomS3 / AtomS3R は LCD に状態を表示する。画面のない AtomS3 Lite / Atom Lite は RGB LED 1 個の色で状態を表す。
 
 - 緑: 測距できている
 - 黄: 無通信で待機中
