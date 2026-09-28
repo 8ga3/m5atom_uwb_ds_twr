@@ -1,4 +1,4 @@
-// M5Atom S3 / AtomS3 Lite / Atom Lite / Atom Matrix 用 UWB DS-TWR ANCHOR サンプルコード
+// M5Atom S3 / AtomS3R / AtomS3 Lite / Atom Lite / Atom Matrix 用 UWB DS-TWR ANCHOR サンプルコード
 
 #include <M5Unified.h>
 #include <M5Stamp_UWB.h>
