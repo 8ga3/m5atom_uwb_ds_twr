@@ -7,6 +7,16 @@
 M5Stamp_UWB uwb;
 M5Stamp_UWBDSRangeConfig rangeConfig;
 
+// 最後の initUwb() が失敗した理由。ライブラリの lastError() は begin() の中の失敗しか
+// 表さず、begin() の後の ID の確認や読み戻しで失敗しても Ok のまま残るので、表示には
+// こちらを使う。
+static M5Stamp_UWBError initError = M5Stamp_UWBError::Ok;
+
+M5Stamp_UWBError uwbInitError()
+{
+    return initError;
+}
+
 // IRQ 線の検査結果を出す。idle は割り込みをすべて禁止してホストのプルアップを付けたとき
 // (正常なら 0)、active はタイマーの割り込みを立ててプルダウンを付けたとき (正常なら 1)
 // の読み値で、-1 は読んでいない。
@@ -84,8 +94,9 @@ bool initUwb(uint32_t spiFastHz)
     rangeConfig.resultRepeatGapMs              = 3;
 
     if (!uwb.begin(config, phy)) {
+        initError = uwb.lastError();
         Serial.printf("UWB_BEGIN,result=FAIL,error=%s\n", uwb.lastErrorName());
-        if (uwb.lastError() == M5Stamp_UWBError::IrqLineFault) {
+        if (initError == M5Stamp_UWBError::IrqLineFault) {
             // QM33120 が IRQ 線を駆動していない。断線 (はんだ付けの不良など) か
             // ショートで、SPI の速度とは関係がない。
             logIrqCheck("FAIL");
@@ -100,6 +111,7 @@ bool initUwb(uint32_t spiFastHz)
     Serial.printf("UWB_ID,dev_id=0x%08lX,chip=%s\n", static_cast<unsigned long>(devId), uwb.chipName());
     if (devId != M5STAMP_UWB_QM33120_DEVICE_ID) {
         Serial.printf("UWB_ID,result=FAIL,expected=0xDECA0314\n");
+        initError = M5Stamp_UWBError::DeviceIdMismatch;
         return false;
     }
 
@@ -107,7 +119,7 @@ bool initUwb(uint32_t spiFastHz)
     // キャッシュした値。begin() 内でドライバは spi_fast_hz に切り替わったので、
     // レジスタをもう一度読む: この読み戻しが壊れていれば、この配線は要求レート
     // を維持できず、以降のすべての転送が見えないまま不安定になる。タイミングの
-    // 際では失敗がときどきしか出ないので、1 回ではなく続けて何度も読む
+    // 余裕が少ないと失敗はときどきしか出ないので、1 回ではなく続けて何度も読む
     // (1 回あたり 20 us 程度なので起動時間への影響はない)。
     static constexpr int FAST_ID_READS = 64;
     for (int i = 0; i < FAST_ID_READS; ++i) {
@@ -115,6 +127,8 @@ bool initUwb(uint32_t spiFastHz)
         if (fastId != M5STAMP_UWB_QM33120_DEVICE_ID) {
             Serial.printf("UWB_SPI,result=FAIL,fast_hz=%lu,read=%d,dev_id=0x%08lX\n",
                           static_cast<unsigned long>(spiFastHz), i, static_cast<unsigned long>(fastId));
+            // ライブラリに読み戻しの失敗を表すエラーは無いので、SPI の問題として表示する (E:SPI)。
+            initError = M5Stamp_UWBError::SpiNotReady;
             return false;
         }
     }
@@ -127,6 +141,7 @@ bool initUwb(uint32_t spiFastHz)
 
     Serial.printf("UWB_CONFIG,result=OK,ch=%u,plen=%u,rate=6M8,tx_power=0x%08lX\n", static_cast<unsigned>(phy.channel),
                   static_cast<unsigned>(phy.preambleLength), static_cast<unsigned long>(phy.txPower));
+    initError = M5Stamp_UWBError::Ok;
     return true;
 }
 
@@ -135,8 +150,9 @@ bool initUwbWithFallback()
     static constexpr uint32_t rates[] = {UWB_SPI_FAST_HZ, UWB_SPI_FALLBACK_HZ, UWB_SPI_SAFE_HZ};
     uint32_t lastTried = 0;
     for (const uint32_t hz : rates) {
-        // -D UWB_SPI_FAST_HZ で下位のレートと同じ値にしたときに同じ試行を繰り返さない。
-        if (hz == lastTried) continue;
+        // 前に試したレートより遅いものだけを試す。-D UWB_SPI_FAST_HZ で下位のレート以下を
+        // 指定したときに、同じ試行を繰り返したり、指定より速いレートへ上げたりしない。
+        if ((lastTried != 0) && (hz >= lastTried)) continue;
         if (lastTried != 0) {
             // 前のレートでリンクが上がらなかったか、読み戻しに失敗した。
             uwb.end();
@@ -147,7 +163,7 @@ bool initUwbWithFallback()
         // 動かし続けることもできるが、故障に気付かないまま測距のタイミングが
         // 崩れるので、ここで止めてエラー表示にする
         // (doc/multi-anchor-positioning-design.md 5.3)。
-        if (uwb.lastError() == M5Stamp_UWBError::IrqLineFault) return false;
+        if (initError == M5Stamp_UWBError::IrqLineFault) return false;
     }
     return false;
 }
