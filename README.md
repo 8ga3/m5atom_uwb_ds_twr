@@ -25,7 +25,7 @@ PlatformIO で対象の環境を選び、ビルド・書き込みを行う。
 pio run -e atoms3-tag -t upload
 ```
 
-シリアルは 921600bps で出力する (`platformio.ini` の `monitor_speed` と同じ)。`pio device monitor` はこの値を使う。
+シリアルは 1500000bps で出力する (`platformio.ini` の `monitor_speed` と同じ)。`pio device monitor` はこの値を使う。
 
 ### 2. ID の設定 (TAG / ANCHOR 共通)
 
@@ -85,8 +85,12 @@ TAG は既定で 100ms (10Hz) ごとに全アンカーを 1 回ずつ測距す�
 PLATFORMIO_BUILD_FLAGS="-D UWB_RANGE_CYCLE_MS=200" pio run -e atoms3-tag -t upload
 ```
 
-10Hz より速くするには ANCHOR 側の設定変更が必要で、まだ対応していない
+アンカー 4 台では 30Hz (`UWB_RANGE_CYCLE_MS=33`) まで失敗なく測距できることを確かめた。ただし 30Hz では
+TAG の LCD の書き換えで周期が最大 3ms 揺れる
 ([doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 5 章)。
+
+TAG と ANCHOR の DS-TWR のタイミングは組で決めてある。ANCHOR だけを新しいファームウェアにすると、古い TAG は
+Response を受信窓の外で受けることになって測距できない。更新するときは TAG を先に書き換える。
 
 ## 状態表示
 

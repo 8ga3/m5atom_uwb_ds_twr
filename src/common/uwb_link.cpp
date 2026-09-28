@@ -32,8 +32,19 @@ bool initUwb(uint32_t spiFastHz)
     // initiatorAddress / responderAddress は呼び出し側 (ANCHOR/TAG それぞれの
     // setup()) が initUwb() を呼ぶ前に設定済みという前提。ここで panId を
     // 書き戻すと、TAG がサーバーから受け取った値を握り潰してしまう。
-    rangeConfig.responseRxAfterTxDelayUus      = 1500;
-    rangeConfig.responseTxDelayUus             = 3000;
+    // タグが Poll の送信完了から Response の受信を始めるまでの待ち (タグだけが使う)。
+    // Response はアンカーが Poll の受信時刻から responseTxDelayUus 後に送るので、
+    // その値からプリアンブルの長さ (約 140 us) と余裕を引いた時刻までに受信を始める。
+    // 600 なら responseTxDelayUus が 1000〜3000 のどのアンカーとも交信できる。
+    rangeConfig.responseRxAfterTxDelayUus      = 600;
+    // アンカーが Poll の受信時刻から Response を送るまでの遅延 (アンカーだけが使う)。
+    // 下限は Final と同じくホストの処理時間で決まる。SPI を 20MHz で回すフォーク版では、
+    // Poll の受信から送信予約まで AtomS3 で 310〜325 us、Atom Matrix で約 450 us だった
+    // (doc/multi-anchor-positioning-design.md 5.2)。1000 で余裕は 540 us 以上残る。
+    // 送信を早めたので、組になるタグ側の responseRxAfterTxDelayUus と
+    // resultRxAfterFinalTxDelayUus も下げてある。アンカーだけをこの版にすると、
+    // 古いタグとは測距できない。
+    rangeConfig.responseTxDelayUus             = 1000;
     // Final は Response の受信時刻から finalTxDelayUus 後に遅延送信する。受信完了の
     // 検知から送信予約までのホスト側の処理が間に合わず、予約が送信時刻の約 200 us
     // 前を過ぎると TX_START_FAILED になる。上流のライブラリは受信完了を delay(1) で
@@ -46,10 +57,20 @@ bool initUwb(uint32_t spiFastHz)
     // 500〜3500 uus 後) にも収まる。
     rangeConfig.finalTxDelayUus                = 1200;
     rangeConfig.finalRxAfterResponseTxDelayUus = 500;
-    rangeConfig.resultRxAfterFinalTxDelayUus   = 500;
+    // タグが Final の送信完了から距離通知 (Result) の受信を始めるまでの待ち。アンカーは
+    // Final を受けるとすぐに Result を送り、SPI を 20MHz で回すと Final の受信から
+    // 送信開始まで 300 us 程度しかかからない。500 では受信を始める前に Result の
+    // プリアンブルが終わってしまい、タグは RX_TIMEOUT になった。0 にして送信完了の
+    // 直後から受ける。受信窓は rxTimeoutUus なので、Result が 1 ms 以上遅れる旧版の
+    // アンカーも受けられる。この値を使うのはタグだけ。
+    rangeConfig.resultRxAfterFinalTxDelayUus   = 0;
     rangeConfig.rxTimeoutUus                   = 3000;
     rangeConfig.hostTimeoutMs                  = 100;
-    rangeConfig.resultRepeatCount              = 3;
+    // アンカーが距離通知 (Result) を送る回数。タグは 1 回目を受ければ抜けるので、
+    // 2 回目以降は次のスロットで別のアンカーと交信しているタグに届き、1 スロットが
+    // 12ms の 20Hz では RANGE_FRAME_MISMATCH を多発させた
+    // (doc/multi-anchor-positioning-design.md 5.2)。1 回だけ送る。
+    rangeConfig.resultRepeatCount              = 1;
     rangeConfig.resultRepeatGapMs              = 3;
 
     if (!uwb.begin(config, phy)) {
