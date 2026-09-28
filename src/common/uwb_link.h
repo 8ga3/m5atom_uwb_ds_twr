@@ -18,3 +18,6 @@ bool initUwb(uint32_t spiFastHz);
 // UWB_SPI_FAST_HZ から順に遅いレートで initUwb() を試し、最初に通ったところで
 // 止める。すべて失敗したら false。
 bool initUwbWithFallback();
+
+// 最後の initUwb() が失敗した理由 (成功していれば Ok)。初期化に失敗したときの表示に使う。
+M5Stamp_UWBError uwbInitError();

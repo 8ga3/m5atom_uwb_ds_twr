@@ -196,7 +196,7 @@ void setup()
     uwbReady = initUwbWithFallback();
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
     setLedId(anchorId);
-    updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwb.lastError()));
+    updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwbInitError()));
 }
 
 void loop()

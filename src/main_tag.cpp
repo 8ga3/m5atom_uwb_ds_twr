@@ -201,7 +201,7 @@ static void updateStatus(DisplayState state)
 
     if (!uwbReady) {
         gfx.println("STA:FAIL");
-        gfx.printf("E:%s\n", errorShortName(uwb.lastError()));
+        gfx.printf("E:%s\n", errorShortName(uwbInitError()));
         endDisplayFrame();
         return;
     }
