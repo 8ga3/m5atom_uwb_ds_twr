@@ -33,8 +33,10 @@ bool configReady    = false;
 #ifndef UWB_RANGE_CYCLE_MS
 #define UWB_RANGE_CYCLE_MS 100
 #endif
+// uint32_t へ変換する前のマクロの値で検査する。変換後だと -1 などの負の値が大きな
+// 正の数になって検査を通ってしまう。
+static_assert((UWB_RANGE_CYCLE_MS) > 0, "UWB_RANGE_CYCLE_MS must be positive");
 static constexpr uint32_t RANGE_CYCLE_MS = UWB_RANGE_CYCLE_MS;
-static_assert(RANGE_CYCLE_MS > 0, "UWB_RANGE_CYCLE_MS must be positive");
 
 // DS_RANGE_STAT はアンカーごとにおよそこの間隔で 1 行出す。試行回数で間引くと、
 // 周期を詰めたぶんだけ行数が増えてシリアルの送信が測距ループを止めうるので、
@@ -415,7 +417,9 @@ void setup()
     wifiStartMonitor();
     Serial.printf("TASK,ranging_core=%d\n", xPortGetCoreID());
 
-    uwbReady = initUwbWithFallback();
+    // 失敗したら SPI の速度を下げて再試行することはせず、エラー表示で止める。
+    // 測距のタイミングは 20MHz 前提で、遅いレートでは測距にならない (hw_pins.h)。
+    uwbReady = initUwb(UWB_SPI_FAST_HZ);
     // initUwb() はアンカーと共通の値を入れるので、タグだけの上書きはその後で行う。
     // アンカー側の hostTimeoutMs は Poll を待つ窓の長さも兼ねるので、共通値は変えない。
     rangeConfig.hostTimeoutMs = TAG_HOST_TIMEOUT_MS;

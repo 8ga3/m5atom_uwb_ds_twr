@@ -193,7 +193,9 @@ void setup()
     rangeConfig.initiatorAddress = 0x0000;
     rangeConfig.responderAddress = anchorId;
 
-    uwbReady = initUwbWithFallback();
+    // 失敗したら SPI の速度を下げて再試行することはせず、エラー表示で止める。
+    // 測距のタイミングは 20MHz 前提で、遅いレートでは測距にならない (hw_pins.h)。
+    uwbReady = initUwb(UWB_SPI_FAST_HZ);
     Serial.printf("TEST_START,result=%s\n", uwbReady ? "OK" : "FAIL");
     setLedId(anchorId);
     updateStatus(DisplayState::Init, 0.0f, 0, 0, uwbReady ? "----" : errorShortName(uwbInitError()));

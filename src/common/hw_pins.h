@@ -74,12 +74,11 @@ static constexpr uint8_t BTN_MODE = INPUT;
 // 20MHz は 80MHz の APB クロックをちょうど割り切る値 (80/4) でもある。
 // 別のレートを試すときは -D UWB_SPI_FAST_HZ=<hz> で上書きする。
 //
-// 上流のライブラリは初期化後に高速レートへ切り替えておらず、フォークで直すまでは
-// どのボードも実際には 2MHz で動いていた (doc/multi-anchor-positioning-design.md 5.3)。
-// そのため initUwbWithFallback() は指定レートでの読み戻しが壊れていたら
-// UWB_SPI_FALLBACK_HZ、それも駄目なら従来どおりの UWB_SPI_SAFE_HZ で初期化し直す。
+// DS-TWR の送受信タイミング (uwb_link.cpp の initUwb()) はこの 20MHz での処理時間を前提に
+// 詰めてあり、遅いレートでは遅延送信の予約が間に合わない。2MHz だとアンカーは Poll の受信から
+// Response の予約までに約 1.3ms かかり、responseTxDelayUus (1000 uus) に収まらない。そのため
+// 読み戻しが壊れていてもレートを下げて動かし続けることはせず、起動エラーにする
+// (doc/multi-anchor-positioning-design.md 5.3)。
 #ifndef UWB_SPI_FAST_HZ
 #define UWB_SPI_FAST_HZ 20000000
 #endif
-static constexpr uint32_t UWB_SPI_FALLBACK_HZ = 10000000;
-static constexpr uint32_t UWB_SPI_SAFE_HZ     = 2000000;
