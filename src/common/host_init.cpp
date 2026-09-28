@@ -6,7 +6,10 @@
 #include "status.h"
 #include "version.h"
 
-static constexpr uint32_t SERIAL_BAUD = 921600;
+// Atom Lite / Atom Matrix の USB シリアル変換 (FTDI を名乗る M5Stack 独自のチップ) は
+// 24MHz を 16 で割った 1.5M の整数分の 1 しか正確に出せず、921600 では文字化けした。
+// 書き込みにも使う 1500000 なら変換側は誤差なしで、ESP32 側も分数分周で 0.04% に収まる。
+static constexpr uint32_t SERIAL_BAUD = 1500000;
 
 void beginHost()
 {
@@ -37,8 +40,8 @@ void beginSerial(const char* role)
     // 頻度を上げると予算の 5 分の 1 を占めるようになる。TX リングバッファを
     // 用意すれば Serial.printf は memcpy 相当に戻る。バッファサイズはドライバ
     // 停止中しか設定できないため、先に end() する (初回 begin() 前は no-op)。
-    // リングバッファが溢れれば結局ブロックするので、ボーレートも 921600bps に
-    // 上げて 1 行あたりの送出時間を 1ms 程度に縮める (SERIAL_BAUD)。
+    // リングバッファが溢れれば結局ブロックするので、ボーレートも 1500000bps に
+    // 上げて 1 行あたりの送出時間を 1ms 以下に縮める (SERIAL_BAUD)。
     Serial.end();
     Serial.setTxBufferSize(512);
 #else
