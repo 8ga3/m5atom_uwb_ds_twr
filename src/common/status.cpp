@@ -4,7 +4,7 @@
 
 #include "hw_pins.h"
 
-Adafruit_NeoPixel rgbLed(1, LED_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel rgbLed(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 bool hasLed     = false;
 bool hasDisplay = false;
 bool uwbReady   = false;
@@ -14,6 +14,81 @@ uint16_t idRangeMax = 0;
 
 namespace {
 uint32_t lastLedColor = UINT32_MAX;
+
+#if defined(UWB_ATOM_MATRIX)
+// 3x5 ドットの数字。各行の下位 3 ビットが左から右の列に対応する。5x5 の
+// 中央 3 列に描く。
+constexpr uint8_t DIGIT_FONT[10][LED_MATRIX_SIZE] = {
+    {0b111, 0b101, 0b101, 0b101, 0b111},  // 0
+    {0b010, 0b110, 0b010, 0b010, 0b111},  // 1
+    {0b111, 0b001, 0b111, 0b100, 0b111},  // 2
+    {0b111, 0b001, 0b111, 0b001, 0b111},  // 3
+    {0b101, 0b101, 0b111, 0b001, 0b001},  // 4
+    {0b111, 0b100, 0b111, 0b001, 0b111},  // 5
+    {0b111, 0b100, 0b111, 0b101, 0b111},  // 6
+    {0b111, 0b001, 0b010, 0b010, 0b010},  // 7
+    {0b111, 0b101, 0b111, 0b101, 0b111},  // 8
+    {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
+};
+constexpr uint8_t DIGIT_WIDTH = 3;
+
+// 複数桁の ID は横スクロールではなく 1 桁ずつ切り替えて出す。スクロールは 1 秒に
+// 10 回ほど LED を書き換える必要があり、書き換えの間 (1 回 1 ms 程度) は測距ループが
+// 止まるため。切り替えなら書き換えは 1 秒に 2 回で済む。
+// 同じ数字が続く ID (11 など) でも桁の区切りが分かるよう、桁の間は必ず一度消す。
+// 最後の桁のあとは長めに消して、ID の先頭に戻ることを示す。
+constexpr uint32_t DIGIT_ON_MS      = 800;
+constexpr uint32_t DIGIT_GAP_MS     = 200;
+constexpr uint32_t ID_REPEAT_GAP_MS = 1000;
+
+char idText[6]        = "";  // 表示する ID の 10 進文字列。空の間は全面を点ける
+size_t idLen          = 0;
+size_t frameIndex     = 0;  // 偶数なら idText[frameIndex / 2] を表示し、奇数なら消灯
+uint32_t frameStartMs = 0;
+
+// 表示上の座標 (左上が原点) を LED の並び順へ変換する。LED_MATRIX_ROTATION の
+// 1 つごとに表示を時計回りに 90 度回す。
+uint16_t matrixIndex(uint8_t x, uint8_t y)
+{
+    constexpr uint8_t last = LED_MATRIX_SIZE - 1;
+    uint8_t px = x, py = y;
+    switch (LED_MATRIX_ROTATION & 3) {
+        case 1: px = last - y; py = x;        break;
+        case 2: px = last - x; py = last - y; break;
+        case 3: px = y;        py = last - x; break;
+        default:                              break;
+    }
+    return static_cast<uint16_t>((py * LED_MATRIX_SIZE) + px);
+}
+
+uint32_t frameDurationMs(size_t frame)
+{
+    if ((frame % 2) == 0) return DIGIT_ON_MS;
+    return (((frame / 2) + 1) == idLen) ? ID_REPEAT_GAP_MS : DIGIT_GAP_MS;
+}
+
+// 今のフレームを lastLedColor の色で描いて LED へ送る。
+void renderMatrix()
+{
+    if (lastLedColor == UINT32_MAX) return;  // まだ一度も色が決まっていない
+
+    rgbLed.clear();
+    if (idLen == 0) {
+        rgbLed.fill(lastLedColor);
+    } else if ((frameIndex % 2) == 0) {
+        const uint8_t* glyph = DIGIT_FONT[idText[frameIndex / 2] - '0'];
+        constexpr uint8_t left = (LED_MATRIX_SIZE - DIGIT_WIDTH) / 2;
+        for (uint8_t y = 0; y < LED_MATRIX_SIZE; ++y) {
+            for (uint8_t x = 0; x < DIGIT_WIDTH; ++x) {
+                if (glyph[y] & (1u << (DIGIT_WIDTH - 1 - x))) {
+                    rgbLed.setPixelColor(matrixIndex(left + x, y), lastLedColor);
+                }
+            }
+        }
+    }
+    rgbLed.show();
+}
+#endif
 }  // namespace
 
 void initStatusHardware()
@@ -79,8 +154,39 @@ void setLed(uint8_t red, uint8_t green, uint8_t blue)
     const uint32_t color = rgbLed.Color(red, green, blue);
     if (color == lastLedColor) return;
     lastLedColor = color;
+#if defined(UWB_ATOM_MATRIX)
+    renderMatrix();
+#else
     rgbLed.setPixelColor(0, color);
     rgbLed.show();
+#endif
+}
+
+void setLedId(uint16_t id)
+{
+#if defined(UWB_ATOM_MATRIX)
+    snprintf(idText, sizeof(idText), "%u", static_cast<unsigned>(id));
+    idLen        = strlen(idText);
+    frameIndex   = 0;
+    frameStartMs = millis();
+    if (hasLed) renderMatrix();
+#else
+    (void)id;
+#endif
+}
+
+void serviceLed()
+{
+#if defined(UWB_ATOM_MATRIX)
+    // 1 桁の ID は切り替える必要がないので、点けたままにする。
+    if (!hasLed || (idLen <= 1)) return;
+
+    const uint32_t nowMs = millis();
+    if ((nowMs - frameStartMs) < frameDurationMs(frameIndex)) return;
+    frameIndex   = (frameIndex + 1) % (idLen * 2);
+    frameStartMs = nowMs;
+    renderMatrix();
+#endif
 }
 
 void updateLed(DisplayState state)

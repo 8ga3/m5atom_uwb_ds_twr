@@ -4,7 +4,9 @@
 // Stamp-UWB のホスト側配線。AtomS3 と AtomS3 Lite は同じブレイクアウトを
 // 使えるが、旧世代 ESP32 の Atom Lite はまったく使えない: GPIO6-8 は内蔵 SPI
 // フラッシュに配線済み、GPIO38/39 は入力専用のため、汎用ヘッダーピン 6 本から
-// 独自にマッピングを組んでいる。
+// 独自にマッピングを組んでいる。Atom Matrix も同じマッピングを使う。Atom Matrix
+// では G21/G25 が内蔵 IMU (MPU6886) の I2C (SCL/SDA) にもつながっているが、IMU は
+// 初期化しないので、プルアップが付いた線として見えるだけになる。
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 static constexpr int UWB_PIN_IRQ  = 39;
 static constexpr int UWB_PIN_RST  = 38;
@@ -32,10 +34,28 @@ static constexpr int UWB_PIN_CS   = 33;
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 static constexpr int LED_PIN = 35;  // AtomS3 Lite (AtomS3 は画面があり LED 非搭載)
 #else
-static constexpr int LED_PIN = 27;  // Atom Lite
+static constexpr int LED_PIN = 27;  // Atom Lite / Atom Matrix
 #endif
-// Atom の RGB LED は最大輝度だと直視しづらいほど明るい。
+
+// Atom Matrix は同じ G27 に 5x5 の LED アレイが数珠つなぎでつながっている。
+// 並びは左上から行ごとで、LED_MATRIX_ROTATION (0-3) で 90 度単位に回して表示する。
+#if defined(UWB_ATOM_MATRIX)
+static constexpr uint16_t LED_COUNT = 25;
+#else
+static constexpr uint16_t LED_COUNT = 1;
+#endif
+static constexpr uint8_t LED_MATRIX_SIZE = 5;
+#ifndef LED_MATRIX_ROTATION
+#define LED_MATRIX_ROTATION 0
+#endif
+
+// Atom の RGB LED は最大輝度だと直視しづらいほど明るい。Atom Matrix は 25 個を
+// 同時に点けるので、電流と発熱を抑えるためにさらに下げる。
+#if defined(UWB_ATOM_MATRIX)
+static constexpr uint8_t LED_BRIGHTNESS = 20;
+#else
 static constexpr uint8_t LED_BRIGHTNESS = 40;
+#endif
 
 // 本体ボタン。起動時に押されていたら ID 設定モードへ入る。LED と同じ理由で
 // getBoard() は信用せず、ビルドターゲットでピンを決める。Atom Lite の G39 は

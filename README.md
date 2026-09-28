@@ -3,7 +3,7 @@
 M5Stamp-UWB (QM33120) を搭載した M5Atom シリーズで、DS-TWR (Double-Sided Two-Way Ranging) による UWB 測距を行うファームウェア。
 TAG (測距を要求する側) と ANCHOR (応答する側) の 2 つの役割を、共通コードを共有しつつ 1 つのリポジトリにまとめている。
 
-対応ボードは AtomS3 / AtomS3 Lite / Atom Lite。すべて M5Stamp-UWB ブレイクアウトと組み合わせて使う。
+対応ボードは AtomS3 / AtomS3 Lite / Atom Lite / Atom Matrix。すべて M5Stamp-UWB ブレイクアウトと組み合わせて使う。
 
 バージョン: `0.1.0-dev`
 
@@ -13,8 +13,11 @@ TAG (測距を要求する側) と ANCHOR (応答する側) の 2 つの役割�
 
 `platformio.ini` に役割とボードの組み合わせごとの環境を定義している。
 
-- `atoms3-anchor` / `atom-anchor`: ANCHOR
-- `atoms3-tag` / `atom-tag`: TAG
+- `atoms3-anchor` / `atom-anchor` / `atom-matrix-anchor`: ANCHOR
+- `atoms3-tag` / `atom-tag` / `atom-matrix-tag`: TAG
+
+`atoms3-*` は AtomS3 と AtomS3 Lite の共用、`atom-*` は Atom Lite 用、`atom-matrix-*` は Atom Matrix 用。
+Atom Lite と Atom Matrix は実行時に見分けられないため、ビルドを分けている。
 
 PlatformIO で対象の環境を選び、ビルド・書き込みを行う。
 
@@ -70,6 +73,25 @@ TAG は起動時に `GET /api/v1/config` を 1 回呼び、巡回するアンカ
 - 周期の統計は Wi-Fi の有無に関係なく 10 秒ごとに `CYCLE_STAT,...` としてシリアルへ出る。周期の最小・最大・平均と、予定より遅れて始まったスロットの数 (`slot_late`) で、測距ループが止められていないかを確認できる。
 - 自己位置推定はまだ実装していないため、パケットの測位欄は常に「測位なし」で送る。
 - 受信側の確認にはサーバー側の `tools/dump_udp.py listen` が使える。
+
+## 状態表示
+
+AtomS3 は LCD に状態を表示する。画面のない AtomS3 Lite / Atom Lite は RGB LED 1 個の色で状態を表す。
+
+- 緑: 測距できている
+- 黄: 無通信で待機中
+- 赤: UWB トランシーバーが使えない、または測距を開始できない (TAG でサーバー構成が無い場合を含む)
+- マゼンタ: シリアルコンソールでの設定入力待ち
+
+Atom Matrix は同じ色で、5x5 の LED アレイに自機の ID (TAG ID またはアンカー ID) を 10 進で表示する。
+
+- ID が 2 桁以上のときは 1 桁ずつ約 1 秒ごとに切り替える。桁の間は一度消灯し、最後の桁のあとは長めに消灯してから先頭の桁に戻る
+- 設定入力待ちの間は ID を表示せず、25 個すべてをマゼンタで点灯する
+- 表示の向きはビルドフラグ `-D LED_MATRIX_ROTATION=<0-3>` で 90 度単位に回せる
+
+横スクロールにしないのは、LED を書き換えている間は測距ループが止まるため。25 個ぶんの送信だけで
+約 0.75 ms (25 個 × 24 bit × 1.25 µs) かかる。スクロールは 1 秒に 10 回ほどの書き換えが要るが、
+切り替え表示なら 1 秒に 2 回程度で済む。
 
 ## ドキュメント
 
