@@ -446,26 +446,24 @@ static void updateStatus(DisplayState state)
 
     // 測位結果。座標 (メートル) を x, y, z の 1 行ずつに出す。z は解かずに固定値
     // (UWB_TAG_Z_MM) を使っているので、白で出して解いた値と区別する。使ったアンカーの
-    // 数と残差はシリアルの POS 行で見る。解けなかった周期は、2 行目に理由を出す。
+    // 数と残差はシリアルの POS 行で見る。解けなかった周期は、x と y の 2 行の代わりに
+    // その旨と理由を出す。z は既知の値なので、解けたかどうかによらず 3 行目に出す。
     gfx.setCursor(0, anchorAreaBottom);
-    const float tagZ = static_cast<float>(TAG_Z_MM) / 1000.0f;
     if (!lastFixValid) {
         gfx.setTextColor(YELLOW);
         gfx.println("X:----");
         gfx.println("Y:----");
-        gfx.setTextColor(WHITE);
-        gfx.printf("Z:%.2f\n", tagZ);
     } else if (lastFix.status == TrilatStatus::Ok) {
         gfx.setTextColor(lastFix.converged ? GREEN : YELLOW);
         gfx.printf("X:%.2f\n", lastFix.x);
         gfx.printf("Y:%.2f\n", lastFix.y);
-        gfx.setTextColor(WHITE);
-        gfx.printf("Z:%.2f\n", tagZ);
     } else {
         gfx.setTextColor(YELLOW);
         gfx.println("POS:NG");
         gfx.println(trilatStatusName(lastFix.status));
     }
+    gfx.setTextColor(WHITE);
+    gfx.printf("Z:%.2f\n", static_cast<float>(TAG_Z_MM) / 1000.0f);
     endDisplayFrame();
 }
 
