@@ -51,8 +51,8 @@ static constexpr uint32_t LOG_INTERVAL =
 static constexpr uint32_t DISPLAY_INTERVAL_MS = 200;
 uint32_t lastDisplayMs                        = 0;
 
-// 画面の下端に測位結果を出す欄の高さ。テキストサイズ 1 (8 px) で 2 行。
-static constexpr int32_t POSITION_AREA_HEIGHT = 16;
+// 画面の下端に測位結果を出す欄の高さ。テキストサイズ 2 (16 px) で 3 行。
+static constexpr int32_t POSITION_AREA_HEIGHT = 48;
 
 // requestDSRange() の各受信待ちの上限。実際の受信待ちはトランシーバーの
 // rxTimeoutUus で数 ms のうちに終わるので、これはその通知が来なかったときの保険。
@@ -354,6 +354,23 @@ static void sendHelloOnce()
     helloSent = serverHello(tagId, bootId, tagConfig.rev);
 }
 
+// Wi-Fi の状態を、1 行目 (高さ 16 px) の右端に扇形のアイコンで出す。緑 = 接続中、
+// 黄 = 設定済みだが接続できていない、灰色に赤の斜線 = 未設定。文字で出すと 1 行を
+// まるごと使うので、見出しの行の空きに収める。幅は 20 px で、見出しは "TAG 255" でも
+// 84 px なので重ならない。
+static void drawWifiIcon(lgfx::LovyanGFX& gfx, int32_t top)
+{
+    const uint16_t color = !wifiConfigured ? DARKGREY : (wifiIsConnected() ? GREEN : YELLOW);
+    // 扇の要を下端に置き、上向き (225〜315 度。0 度が右で時計回り) に 3 本の弧を描く。
+    const int32_t cx = gfx.width() - 11;
+    const int32_t cy = top + 14;
+    gfx.fillCircle(cx, cy, 1, color);
+    gfx.fillArc(cx, cy, 4, 5, 225, 315, color);
+    gfx.fillArc(cx, cy, 8, 9, 225, 315, color);
+    gfx.fillArc(cx, cy, 12, 13, 225, 315, color);
+    if (!wifiConfigured) gfx.drawLine(cx - 9, top + 1, cx + 9, cy, RED);
+}
+
 // 1 周期分の結果をまとめて表示する。アンカーごとに 1 行使うので、交信中の
 // 1 台だけを大きく出す単一アンカー時のレイアウトは捨てた。
 static void updateStatus(DisplayState state)
@@ -362,8 +379,11 @@ static void updateStatus(DisplayState state)
     if (!hasDisplay) return;
 
     lgfx::LovyanGFX& gfx = beginDisplayFrame();
+    // 見出しと自機の ID を 1 行にまとめ、右端に Wi-Fi のアイコンを置く。見出しの色で
+    // 状態を表す。
     gfx.setTextColor(stateColor(state));
-    gfx.println("UWB TAG");
+    drawWifiIcon(gfx, gfx.getCursorY());
+    gfx.printf("TAG %u\n", static_cast<unsigned>(tagId));
 
     if (!uwbReady) {
         gfx.println("STA:FAIL");
@@ -371,13 +391,6 @@ static void updateStatus(DisplayState state)
         endDisplayFrame();
         return;
     }
-
-    gfx.setTextColor(WHITE);
-    gfx.printf("ID:%u\n", static_cast<unsigned>(tagId));
-
-    // Wi-Fi の状態。OFF = 未設定、-- = 設定済みだが接続できていない、OK = 接続中。
-    gfx.setTextColor(wifiIsConnected() ? GREEN : YELLOW);
-    gfx.printf("W:%s\n", wifiShortState());
 
     if (!configReady) {
         // 構成が無い状態は測距そのものが始められないので、距離の代わりに
@@ -388,10 +401,9 @@ static void updateStatus(DisplayState state)
         return;
     }
 
-    // 128x128 をテキストサイズ 2 で使うと 1 画面は 8 行で、見出しと ID と Wi-Fi の
-    // 3 行を引くと残りは 5 行。そのうち最後の 1 行ぶん (16 px) は測位結果をテキスト
-    // サイズ 1 で 2 行出すのに使うので、アンカーは 4 台まで出せる。入りきらない台数の
-    // ときは測位の欄の手前で打ち切るので、全台分はシリアルログで見る。
+    // 128x128 をテキストサイズ 2 で使うと 1 画面は 8 行で、見出しの 1 行を引くと残りは
+    // 7 行。そのうち最後の 3 行は測位結果に使うので、アンカーは 4 台まで出せる。入りきらない台数のときは測位の欄の手前で打ち切るので、全台分は
+    // シリアルログで見る。
     const int32_t anchorAreaBottom = gfx.height() - POSITION_AREA_HEIGHT;
     for (size_t i = 0; (i < tagConfig.anchorCount)
                        && ((gfx.getCursorY() + gfx.fontHeight()) <= anchorAreaBottom);
@@ -405,24 +417,28 @@ static void updateStatus(DisplayState state)
         }
     }
 
-    // 測位結果。1 行目に座標 (メートル)、2 行目に使ったアンカーの数と残差を出す。
-    // 解けなかった周期は理由を出す。
+    // 測位結果。座標 (メートル) を x, y, z の 1 行ずつに出す。z は解かずに固定値
+    // (UWB_TAG_Z_MM) を使っているので、白で出して解いた値と区別する。使ったアンカーの
+    // 数と残差はシリアルの POS 行で見る。解けなかった周期は、2 行目に理由を出す。
     gfx.setCursor(0, anchorAreaBottom);
-    gfx.setTextSize(1);
+    const float tagZ = static_cast<float>(TAG_Z_MM) / 1000.0f;
     if (!lastFixValid) {
         gfx.setTextColor(YELLOW);
-        gfx.println("POS:----");
+        gfx.println("X:----");
+        gfx.println("Y:----");
+        gfx.setTextColor(WHITE);
+        gfx.printf("Z:%.2f\n", tagZ);
     } else if (lastFix.status == TrilatStatus::Ok) {
         gfx.setTextColor(lastFix.converged ? GREEN : YELLOW);
-        gfx.printf("X:%.2f Y:%.2f\n", lastFix.x, lastFix.y);
-        gfx.printf("N:%u R:%.0fmm\n", static_cast<unsigned>(lastFix.used), lastFix.residualRms * 1000.0f);
+        gfx.printf("X:%.2f\n", lastFix.x);
+        gfx.printf("Y:%.2f\n", lastFix.y);
+        gfx.setTextColor(WHITE);
+        gfx.printf("Z:%.2f\n", tagZ);
     } else {
         gfx.setTextColor(YELLOW);
-        gfx.printf("POS:%s\n", trilatStatusName(lastFix.status));
-        gfx.printf("N:%u\n", static_cast<unsigned>(lastFix.used));
+        gfx.println("POS:NG");
+        gfx.println(trilatStatusName(lastFix.status));
     }
-    // 描画先のテキストサイズは次の画面へ持ち越されるので、既定の 2 へ戻す。
-    gfx.setTextSize(2);
     endDisplayFrame();
 }
 
