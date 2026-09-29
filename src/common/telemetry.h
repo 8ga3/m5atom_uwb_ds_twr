@@ -50,8 +50,9 @@ struct TelemetryRange {
     int32_t distanceMm;  // status != 0 のときは 0
 };
 
-// 1 周期ぶんの記録。測位 (自己位置推定) はまだタグ側に無いので、fixFlags は 0 のまま
-// 送る。測距の結果だけでもサーバー側で周期と欠測を追える。
+// 1 周期ぶんの記録。測位欄 (fixFlags 以降) は main_tag.cpp の solvePosition() が埋める。
+// 解けなかった周期は fixFlags を 0 にして座標欄を 0 のまま送る。測距の結果だけでも
+// サーバー側で周期と欠測を追える。
 struct TelemetryCycle {
     uint32_t seq;  // 周期の通番。起動ごとに 0 から数える
     uint32_t tMs;  // 周期の先頭スロットを始めた millis()
