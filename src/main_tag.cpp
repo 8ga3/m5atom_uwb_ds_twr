@@ -187,7 +187,7 @@ static void cycleStatOnCycleStart(uint32_t startMs)
 
 // メートルの float をテレメトリの int32 ミリメートルへ直す。発散した値もそのまま
 // 送る (doc/server-design.md 6.2) が、int32 に収まらない値 (±2147 km 超) は変換が
-// 未定義になるので端に寄せる。
+// 未定義になるので端に寄せる。端の値で送ることは同じ節に書いてある。
 static int32_t positionMetersToMm(float meters)
 {
     const float mm = meters * 1000.0f;
