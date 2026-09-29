@@ -122,7 +122,7 @@ bool lastFixValid    = false;  // 起動してから 1 度でも測位を試み�
 struct PositionStat {
     uint32_t fixes;         // 解が出た周期の数
     uint32_t notConverged;  // そのうち反復の上限までに収束しなかった数
-    uint32_t tooFew;        // 応答したアンカーが足りなかった周期の数
+    uint32_t tooFew;        // 解に渡せる測距が 3 本に満たなかった周期の数
     uint32_t badGeometry;   // 配置が悪く解けなかった周期の数
     uint32_t nonFinite;     // 計算が NaN / 無限大になった周期の数
     uint32_t rejected;      // 成功扱いでも値が有り得ないので解から外した測距の数
@@ -204,6 +204,26 @@ static int32_t positionMetersToMm(float meters)
 // テレメトリには生の値をそのまま送る。
 static constexpr int32_t POSITION_RANGE_MIN_MM = -500;
 
+// POS_REJECT と POS_FAIL の行は、種類ごとにこの間隔より短くは出さない。どちらも
+// 普段は滅多に起きないが、アンカーの置き方が悪いままだと毎周期起きうる。30Hz で
+// 毎周期シリアルへ書くと送信バッファが詰まり、測距ループが止まる。出さなかった分も
+// POS 行の rejected / geometry / non_finite に件数として残る。
+static constexpr uint32_t POS_DETAIL_LOG_INTERVAL_MS = 1000;
+uint32_t lastPosRejectLogMs = 0;
+uint32_t lastPosFailLogMs   = 0;
+bool posRejectLogged        = false;
+bool posFailLogged          = false;
+
+// 詳細行を今出してよいか。出してよければ時刻を記録して true を返す。
+static bool posDetailLogDue(uint32_t& lastMs, bool& logged)
+{
+    const uint32_t nowMs = millis();
+    if (logged && ((nowMs - lastMs) < POS_DETAIL_LOG_INTERVAL_MS)) return false;
+    lastMs = nowMs;
+    logged = true;
+    return true;
+}
+
 // 1 周期ぶんの測距から自己位置を求め、テレメトリの測位欄を埋める。巡回の最後の
 // スロットを終えた直後、テレメトリへ積む前に呼ぶ。
 static void solvePosition(TelemetryCycle& cycle)
@@ -216,17 +236,23 @@ static void solvePosition(TelemetryCycle& cycle)
         const TelemetryRange& range = cycle.ranges[i];
         if (range.status != 0) continue;
         if (range.distanceMm < POSITION_RANGE_MIN_MM) {
-            // 滅多に起きず、起きたときにどの測距だったかを残したいので毎回出す。
+            // 起きたときにどの測距だったかを残す。間隔は POS_DETAIL_LOG_INTERVAL_MS で抑える。
             ++positionStat.rejected;
-            Serial.printf("POS_REJECT,seq=%lu,anchor=0x%04X,distance_mm=%ld\n", static_cast<unsigned long>(cycle.seq),
-                          static_cast<unsigned>(range.anchorId), static_cast<long>(range.distanceMm));
+            if (posDetailLogDue(lastPosRejectLogMs, posRejectLogged)) {
+                Serial.printf("POS_REJECT,seq=%lu,anchor=0x%04X,distance_mm=%ld\n",
+                              static_cast<unsigned long>(cycle.seq), static_cast<unsigned>(range.anchorId),
+                              static_cast<long>(range.distanceMm));
+            }
             continue;
         }
         const AnchorConfig& anchor = tagConfig.anchors[i];
         inputs[count].x            = static_cast<float>(anchor.xMm) / 1000.0f;
         inputs[count].y            = static_cast<float>(anchor.yMm) / 1000.0f;
         inputs[count].z            = static_cast<float>(anchor.zMm) / 1000.0f;
-        inputs[count].range        = static_cast<float>(range.distanceMm + tagConfig.biasMm) / 1000.0f;
+        // int32 のまま足すと、bias_mm の値によっては符号付き整数のオーバーフローになる。
+        // 構成の bias_mm は範囲を絞らずに受け付けているので、float にしてから足す。
+        inputs[count].range =
+            (static_cast<float>(range.distanceMm) + static_cast<float>(tagConfig.biasMm)) / 1000.0f;
         ++count;
     }
 
@@ -243,10 +269,11 @@ static void solvePosition(TelemetryCycle& cycle)
     // 何台足りなかったかを追えるようにする。
     cycle.usedCount = fix.used;
 
-    // 応答が揃っているのに解けなかった周期は、その場で測距値を残す。POS 行は間引いて
-    // いるので、あとから原因の測距を追えない。どちらも滅多に起きないので毎回出す。
-    // 応答の不足 (TooFewRanges) は遮蔽で続けて起きうるので件数だけを数える。
-    if ((fix.status == TrilatStatus::BadGeometry) || (fix.status == TrilatStatus::NonFinite)) {
+    // 測距が揃っているのに解けなかった周期は、その場で測距値を残す。POS 行は間引いて
+    // いるので、あとから原因の測距を追えない。間隔は POS_DETAIL_LOG_INTERVAL_MS で抑える。
+    // 測距の不足 (TooFewRanges) は遮蔽で続けて起きうるので件数だけを数える。
+    if (((fix.status == TrilatStatus::BadGeometry) || (fix.status == TrilatStatus::NonFinite))
+        && posDetailLogDue(lastPosFailLogMs, posFailLogged)) {
         Serial.printf("POS_FAIL,seq=%lu,status=%s,used=%u,iter=%u", static_cast<unsigned long>(cycle.seq),
                       trilatStatusName(fix.status), static_cast<unsigned>(fix.used),
                       static_cast<unsigned>(fix.iterations));
