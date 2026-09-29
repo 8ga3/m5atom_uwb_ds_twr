@@ -9,6 +9,13 @@
 #include "common/status.h"
 #include "common/uwb_link.h"
 
+// runResponder() は txMarginUs が入ったかどうかで、RangeFrameMismatch が Poll 待ち (他の
+// 交信のフレーム) か Final 待ち (本当の異常) かを見分ける。計測を外すと txMarginUs が常に
+// 未設定になり、Final 待ちの不一致まで無通信として数えてしまうので、ビルドを止める。
+#if defined(M5STAMP_UWB_MEASURE_MARGIN) && (M5STAMP_UWB_MEASURE_MARGIN == 0)
+#error "ANCHOR needs M5STAMP_UWB_MEASURE_MARGIN=1 to tell poll-stage frame mismatches from final-stage ones"
+#endif
+
 static constexpr uint32_t LOG_INTERVAL = 20;
 // タグは周期 (既定 100ms) ごとに 1 回しかこのアンカーを呼ばず、受信ウィンドウ
 // (hostTimeoutMs = 100ms) の中に Poll が来ないことも多いので、交信の間に無通信の
@@ -102,11 +109,13 @@ static void runResponder()
         // 弱い電波で受けると CRC エラーなどになり、Atom Matrix のアンカーでは 1 秒に 1 回ほど
         // 起きていた。そのたびに LED を赤にしていたが、タグから見たこのアンカーの測距は
         // 失敗していなかった。自機宛ての Poll を受けそこねた場合もここに入るが、それは
-        // タグ側で RX_TIMEOUT として記録される。
-        const bool pollStage = (marginUs == M5STAMP_UWB_TX_MARGIN_UNKNOWN);
-        const bool pollRxError = pollStage && (result.error == M5Stamp_UWBError::RxError);
+        // タグ側で RX_TIMEOUT として記録される。受信エラーは requester で段階を見分ける。
+        // Poll 待ちで受信エラーになると requester は 0 のまま返り、Poll を受けた後の
+        // Final 待ちでは Poll の送信元が入っている。
+        const bool pollStage   = (marginUs == M5STAMP_UWB_TX_MARGIN_UNKNOWN);
+        const bool pollRxError = (result.error == M5Stamp_UWBError::RxError) && (result.requester == 0);
         const bool otherTraffic =
-            pollStage && ((result.error == M5Stamp_UWBError::RangeFrameMismatch) || pollRxError);
+            (pollStage && (result.error == M5Stamp_UWBError::RangeFrameMismatch)) || pollRxError;
 
         // 無通信による受信タイムアウトは想定内であり、失敗とはカウントしない。
         if ((result.error == M5Stamp_UWBError::RxTimeout) || otherTraffic) {
