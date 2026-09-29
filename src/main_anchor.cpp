@@ -57,14 +57,9 @@ static void updateStatus(DisplayState state, float distanceM, uint32_t elapsedMs
 
     lgfx::LovyanGFX& gfx = beginDisplayFrame();
     gfx.setTextColor(color);
-    gfx.println("UWB ANCHOR");
-    // 自機 ID は設定時と同じ 10 進で出す。UWB が上がっていないときは ID より
-    // 故障の方が知りたいので、その行を潰して FAIL を出す。
-    if (uwbReady) {
-        gfx.printf("ID:%u\n", static_cast<unsigned>(anchorId));
-    } else {
-        gfx.println("STA:FAIL");
-    }
+    // 見出しと自機の ID を 1 行にまとめる。ID は設定時と同じ 10 進で出す。
+    gfx.printf("ANC %u\n", static_cast<unsigned>(anchorId));
+    if (!uwbReady) gfx.println("STA:FAIL");
 
     if (state == DisplayState::Ok) {
         gfx.printf("D:%.3fm\n", distanceM);
