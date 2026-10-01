@@ -6,6 +6,7 @@
 #include "common/device_id.h"
 #include "common/host_init.h"
 #include "common/hw_pins.h"
+#include "common/position_filter.h"
 #include "common/server_config.h"
 #include "common/status.h"
 #include "common/telemetry.h"
@@ -68,7 +69,8 @@ static constexpr uint32_t TAG_HOST_TIMEOUT_MS = 10;
 #ifndef UWB_TAG_Z_MM
 #define UWB_TAG_Z_MM 0
 #endif
-// テレメトリの z_mm は int16 なので、その範囲に収まることを確かめる (doc/server-design.md 6.2)。
+// テレメトリの z_mm と kf_z_mm は int16 なので、その範囲に収まることを確かめる
+// (doc/server-design.md 6.2)。
 static_assert(((UWB_TAG_Z_MM) >= INT16_MIN) && ((UWB_TAG_Z_MM) <= INT16_MAX), "UWB_TAG_Z_MM must fit in int16");
 static constexpr int32_t TAG_Z_MM = UWB_TAG_Z_MM;
 static_assert(TRILAT_ANCHOR_MAX >= UWB_ANCHOR_MAX, "trilateration must accept every anchor in the config");
@@ -113,10 +115,18 @@ struct AnchorStat {
 };
 AnchorStat anchorStats[UWB_ANCHOR_MAX] = {};
 size_t anchorIndex                     = 0;
+// 直近の周期で、各スロットを始めた millis()。添字は tagConfig.anchors[] と同じ並び。
+// フィルタは測距ごとにその時刻まで予測を進めてから取り込む。
+uint32_t rangeStartMs[UWB_ANCHOR_MAX] = {};
 
 // 直近の周期の測位結果。画面の表示と POS 行に使う。
 TrilatResult lastFix = {};
 bool lastFixValid    = false;  // 起動してから 1 度でも測位を試みたか
+
+// 測距を直接の観測にするカルマンフィルタ (doc/multi-anchor-positioning-design.md 3.7)。
+// 直近の周期の結果は画面の表示と POS_KF 行に使う。
+PositionFilter positionFilter;
+PositionFilterCycle lastFilter = {};
 
 // 測位の統計。POS 行を出すたびに数え直す。
 struct PositionStat {
@@ -127,6 +137,16 @@ struct PositionStat {
     uint32_t nonFinite;     // 計算が NaN / 無限大になった周期の数
     uint32_t rejected;      // 成功扱いでも値が有り得ないので解から外した測距の数
     uint32_t solveMaxUs;    // trilaterate2d() 1 回にかかった時間の最大値
+    // フィルタの統計
+    uint32_t kfUpdated;     // フィルタ後の位置が有効で、観測で更新された周期の数
+    uint32_t kfPredicted;   // フィルタ後の位置が有効で、予測だけでつないだ周期の数
+    uint32_t kfInvalid;     // フィルタ後の位置が無効だった周期の数
+    uint32_t kfInits;       // 最小二乗の解で初期化した回数
+    uint32_t kfRejected;    // イノベーションの大きさで棄却した測距の数
+    uint32_t kfResetCoast;  // 測距を取り込めない時間が上限を超えて無効にした回数
+    uint32_t kfResetSigma;  // 位置の標準偏差が上限を超えて無効にした回数
+    uint32_t kfResetNonFinite;
+    uint32_t kfMaxUs;       // フィルタ 1 周期ぶんの処理にかかった時間の最大値
 };
 PositionStat positionStat = {};
 uint32_t lastPosLogMs     = 0;
@@ -211,8 +231,10 @@ static constexpr int32_t POSITION_RANGE_MIN_MM = -500;
 static constexpr uint32_t POS_DETAIL_LOG_INTERVAL_MS = 1000;
 uint32_t lastPosRejectLogMs = 0;
 uint32_t lastPosFailLogMs   = 0;
+uint32_t lastKfResetLogMs   = 0;
 bool posRejectLogged        = false;
 bool posFailLogged          = false;
+bool kfResetLogged          = false;
 
 // 詳細行を今出してよいか。出してよければ時刻を記録して true を返す。
 static bool posDetailLogDue(uint32_t& lastMs, bool& logged)
@@ -224,6 +246,67 @@ static bool posDetailLogDue(uint32_t& lastMs, bool& logged)
     return true;
 }
 
+// フィルタを 1 周期ぶん進め、テレメトリのフィルタ欄を埋める。inputs は solvePosition() が
+// 最小二乗に渡したものと同じ測距で、巡回の順 (= 時刻順) に並んでいる。
+static void filterPosition(TelemetryCycle& cycle, const PositionFilterRange* inputs, size_t count,
+                           const TrilatResult& fix)
+{
+    // 結果の位置は周期の最後のスロットの時刻まで予測を進めたものにする。
+    const uint32_t endMs   = rangeStartMs[tagConfig.anchorCount - 1];
+    const uint32_t startUs = micros();
+    const PositionFilterCycle kf =
+        positionFilter.step(inputs, count, static_cast<float>(TAG_Z_MM) / 1000.0f, endMs,
+                            fix.status == TrilatStatus::Ok, fix.x, fix.y, fix.residualRms, fix.used);
+    const uint32_t kfUs = micros() - startUs;
+    if (kfUs > positionStat.kfMaxUs) positionStat.kfMaxUs = kfUs;
+    lastFilter = kf;
+
+    positionStat.kfRejected += kf.rejected;
+    if (kf.initialized) ++positionStat.kfInits;
+    switch (kf.reset) {
+        case PositionFilterReset::None:
+            break;
+        case PositionFilterReset::CoastTimeout:
+            ++positionStat.kfResetCoast;
+            break;
+        case PositionFilterReset::SigmaLimit:
+            ++positionStat.kfResetSigma;
+            break;
+        case PositionFilterReset::NonFinite:
+            ++positionStat.kfResetNonFinite;
+            break;
+    }
+    // 無効にした周期はその場で残す。遮蔽が続くと何度も起きうるので、間隔は
+    // POS_DETAIL_LOG_INTERVAL_MS で抑え、件数は POS_KF 行で追う。
+    if ((kf.reset != PositionFilterReset::None) && posDetailLogDue(lastKfResetLogMs, kfResetLogged)) {
+        Serial.printf("POS_KF_RESET,seq=%lu,reason=%s,used=%u,rejected=%u,reinit=%d\n",
+                      static_cast<unsigned long>(cycle.seq), positionFilterResetName(kf.reset),
+                      static_cast<unsigned>(kf.used), static_cast<unsigned>(kf.rejected), kf.initialized ? 1 : 0);
+    }
+
+    cycle.kfUsed     = kf.used;
+    cycle.kfRejected = kf.rejected;
+    if (!kf.valid) {
+        // 無効な周期は座標欄を 0 のまま送り、サーバーは NULL で保存する。
+        ++positionStat.kfInvalid;
+        return;
+    }
+    if (kf.updated) {
+        ++positionStat.kfUpdated;
+    } else {
+        ++positionStat.kfPredicted;
+    }
+
+    const float sigmaMm = kf.sigma * 1000.0f;
+    cycle.fixFlags |= TELEMETRY_FIX_KF_OK;
+    if (kf.updated) cycle.fixFlags |= TELEMETRY_FIX_KF_UPDATE;
+    if (kf.initialized) cycle.fixFlags |= TELEMETRY_FIX_KF_INIT;
+    cycle.kfXMm     = positionMetersToMm(kf.x);
+    cycle.kfYMm     = positionMetersToMm(kf.y);
+    cycle.kfZMm     = static_cast<int16_t>(TAG_Z_MM);
+    cycle.kfSigmaMm = (sigmaMm >= 65535.0f) ? 65535 : static_cast<uint16_t>(lroundf(sigmaMm));
+}
+
 // 1 周期ぶんの測距から自己位置を求め、テレメトリの測位欄を埋める。巡回の最後の
 // スロットを終えた直後、テレメトリへ積む前に呼ぶ。
 static void solvePosition(TelemetryCycle& cycle)
@@ -231,6 +314,7 @@ static void solvePosition(TelemetryCycle& cycle)
     // 応答したアンカーだけを使う。ranges[] の添字は tagConfig.anchors[] と同じ並び。
     // 測距値には構成の bias_mm を足す (doc/server-design.md 4.1)。
     TrilatInput inputs[UWB_ANCHOR_MAX];
+    PositionFilterRange filterInputs[UWB_ANCHOR_MAX];
     size_t count = 0;
     for (size_t i = 0; i < tagConfig.anchorCount; ++i) {
         const TelemetryRange& range = cycle.ranges[i];
@@ -253,6 +337,8 @@ static void solvePosition(TelemetryCycle& cycle)
         // 構成の bias_mm は範囲を絞らずに受け付けているので、float にしてから足す。
         inputs[count].range =
             (static_cast<float>(range.distanceMm) + static_cast<float>(tagConfig.biasMm)) / 1000.0f;
+        filterInputs[count] = {inputs[count].x, inputs[count].y, inputs[count].z, inputs[count].range,
+                               rangeStartMs[i]};
         ++count;
     }
 
@@ -264,8 +350,12 @@ static void solvePosition(TelemetryCycle& cycle)
     lastFix      = fix;
     lastFixValid = true;
 
-    // 解けなかった周期は fix_flags を 0 にし、座標欄は 0 のまま送る。サーバーは
-    // この周期の座標を NULL で保存する。used_count には解に渡した測距の数を入れ、
+    // フィルタは最小二乗の成否によらず毎周期回す。解けなかった周期も、残った測距で
+    // 更新するか、予測だけでつなぐ。
+    filterPosition(cycle, filterInputs, count, fix);
+
+    // 解けなかった周期は fix_flags の bit0 を立てず、座標欄は 0 のまま送る。サーバーは
+    // この周期の最小二乗の座標を NULL で保存する。used_count には解に渡した測距の数を入れ、
     // 何台足りなかったかを追えるようにする。
     cycle.usedCount = fix.used;
 
@@ -303,7 +393,7 @@ static void solvePosition(TelemetryCycle& cycle)
     if (!fix.converged) ++positionStat.notConverged;
 
     const float residualMm = fix.residualRms * 1000.0f;
-    cycle.fixFlags         = TELEMETRY_FIX_OK;
+    cycle.fixFlags |= TELEMETRY_FIX_OK;
     cycle.xMm              = positionMetersToMm(fix.x);
     cycle.yMm              = positionMetersToMm(fix.y);
     // 2D 測位では高さは解かないので、固定したタグの高さをそのまま入れる。
@@ -333,6 +423,23 @@ static void logPosition(const TelemetryCycle& cycle)
         static_cast<unsigned long>(positionStat.tooFew), static_cast<unsigned long>(positionStat.badGeometry),
         static_cast<unsigned long>(positionStat.nonFinite), static_cast<unsigned long>(positionStat.rejected),
         static_cast<unsigned long>(positionStat.solveMaxUs));
+
+    // フィルタは別の行にする。POS 行の形は 2D 測位を入れたときのまま保つ。
+    Serial.printf("POS_KF,seq=%lu,state=%s", static_cast<unsigned long>(cycle.seq),
+                  !lastFilter.valid ? "NONE" : (lastFilter.updated ? "UPDATE" : "PREDICT"));
+    if (lastFilter.valid) {
+        Serial.printf(",x_mm=%ld,y_mm=%ld,vx_mm_s=%ld,vy_mm_s=%ld,sigma_mm=%u", static_cast<long>(cycle.kfXMm),
+                      static_cast<long>(cycle.kfYMm), static_cast<long>(lroundf(lastFilter.vx * 1000.0f)),
+                      static_cast<long>(lroundf(lastFilter.vy * 1000.0f)), static_cast<unsigned>(cycle.kfSigmaMm));
+    }
+    Serial.printf(
+        ",updated=%lu,predicted=%lu,invalid=%lu,inits=%lu,rejected=%lu,reset_coast=%lu,reset_sigma=%lu,"
+        "reset_non_finite=%lu,kf_max_us=%lu\n",
+        static_cast<unsigned long>(positionStat.kfUpdated), static_cast<unsigned long>(positionStat.kfPredicted),
+        static_cast<unsigned long>(positionStat.kfInvalid), static_cast<unsigned long>(positionStat.kfInits),
+        static_cast<unsigned long>(positionStat.kfRejected), static_cast<unsigned long>(positionStat.kfResetCoast),
+        static_cast<unsigned long>(positionStat.kfResetSigma),
+        static_cast<unsigned long>(positionStat.kfResetNonFinite), static_cast<unsigned long>(positionStat.kfMaxUs));
     positionStat = PositionStat{};
 }
 
@@ -356,6 +463,8 @@ static void applyConfig()
     // 測位の結果も前の構成のアンカーで出したものなので捨てる。
     lastFix      = TrilatResult{};
     lastFixValid = false;
+    positionFilter.reset();
+    lastFilter   = PositionFilterCycle{};
     positionStat = PositionStat{};
     lastPosLogMs = millis();
 
@@ -444,23 +553,25 @@ static void updateStatus(DisplayState state)
         }
     }
 
-    // 測位結果。座標 (メートル) を x, y, z の 1 行ずつに出す。z は解かずに固定値
-    // (UWB_TAG_Z_MM) を使っているので、白で出して解いた値と区別する。使ったアンカーの
-    // 数と残差はシリアルの POS 行で見る。解けなかった周期は、x と y の 2 行の代わりに
-    // その旨と理由を出す。z は既知の値なので、解けたかどうかによらず 3 行目に出す。
+    // 測位結果。フィルタ後の位置 (メートル) を x, y, z の 1 行ずつに出す。観測で更新した
+    // 周期は緑、予測だけでつないだ周期は黄色にする。z は解かずに固定値 (UWB_TAG_Z_MM) を
+    // 使っているので、白で出して推定した値と区別する。最小二乗の解と残差はシリアルの POS 行で
+    // 見る。フィルタ後の位置が無効な周期は、x と y の 2 行の代わりにその旨と、初期化に使える
+    // 最小二乗の解が無い理由を出す。最小二乗が解けていて無効なのは、残差が大きすぎて
+    // 初期化に使わなかった場合なので RESID と出す。z は既知の値なので 3 行目に必ず出す。
     gfx.setCursor(0, anchorAreaBottom);
     if (!lastFixValid) {
         gfx.setTextColor(YELLOW);
         gfx.println("X:----");
         gfx.println("Y:----");
-    } else if (lastFix.status == TrilatStatus::Ok) {
-        gfx.setTextColor(lastFix.converged ? GREEN : YELLOW);
-        gfx.printf("X:%.2f\n", lastFix.x);
-        gfx.printf("Y:%.2f\n", lastFix.y);
+    } else if (lastFilter.valid) {
+        gfx.setTextColor(lastFilter.updated ? GREEN : YELLOW);
+        gfx.printf("X:%.2f\n", lastFilter.x);
+        gfx.printf("Y:%.2f\n", lastFilter.y);
     } else {
         gfx.setTextColor(YELLOW);
         gfx.println("POS:NG");
-        gfx.println(trilatStatusName(lastFix.status));
+        gfx.println((lastFix.status == TrilatStatus::Ok) ? "RESID" : trilatStatusName(lastFix.status));
     }
     gfx.setTextColor(WHITE);
     gfx.printf("Z:%.2f\n", static_cast<float>(TAG_Z_MM) / 1000.0f);
@@ -496,6 +607,7 @@ static void runRanging()
 
     const uint16_t anchorId      = tagConfig.anchors[anchorIndex].id;
     rangeConfig.responderAddress = anchorId;
+    rangeStartMs[anchorIndex]    = lastRangeMs;
 
     const M5Stamp_UWBDSRangeResult result = uwb.requestDSRange(rangeConfig);
 
@@ -657,6 +769,12 @@ void setup()
     Serial.printf("ANCHORS,count=%u\n", static_cast<unsigned>(tagConfig.anchorCount));
     Serial.printf("POS_CONFIG,method=trilat2d,tag_z_mm=%ld,min_ranges=%u\n", static_cast<long>(TAG_Z_MM),
                   static_cast<unsigned>(TRILAT_MIN_RANGES));
+    Serial.printf(
+        "POS_KF_CONFIG,model=cv2d,accel_psd=%.2f,range_sigma_mm=%.0f,gate_nis=%.1f,init_resid_max_mm=%.0f,"
+        "coast_max_ms=%lu,sigma_max_mm=%.0f\n",
+        static_cast<double>(PFILTER_ACCEL_PSD), static_cast<double>(PFILTER_RANGE_SIGMA_M * 1000.0f),
+        static_cast<double>(PFILTER_GATE_NIS), static_cast<double>(PFILTER_INIT_RESIDUAL_MAX_M * 1000.0f),
+        static_cast<unsigned long>(PFILTER_COAST_MAX_MS), static_cast<double>(PFILTER_POS_SIGMA_MAX_M * 1000.0f));
     setLedId(tagId);
     updateStatus(configReady ? DisplayState::Init : DisplayState::Fail);
 }

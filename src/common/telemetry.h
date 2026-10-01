@@ -24,13 +24,16 @@
 
 // パケット形式 (doc/server-design.md 6.2)。すべてリトルエンディアンで、パディングは入れない。
 static constexpr uint32_t TELEMETRY_MAGIC        = 0x54425755;  // 'U' 'W' 'B' 'T'
-static constexpr uint8_t TELEMETRY_VERSION       = 1;
+static constexpr uint8_t TELEMETRY_VERSION       = 2;
 static constexpr size_t TELEMETRY_HEADER_SIZE    = 24;
-static constexpr size_t TELEMETRY_CYCLE_SIZE     = 16;
+static constexpr size_t TELEMETRY_CYCLE_SIZE     = 30;
 static constexpr size_t TELEMETRY_RANGE_SIZE     = 8;
 static constexpr uint8_t TELEMETRY_COUNT_MAX     = 16;  // 1 パケットに詰められるサイクル数の上限
 static constexpr uint8_t TELEMETRY_FIX_OK        = 0x01;
 static constexpr uint8_t TELEMETRY_FIX_3D        = 0x02;
+static constexpr uint8_t TELEMETRY_FIX_KF_OK     = 0x04;  // フィルタ後の位置が有効
+static constexpr uint8_t TELEMETRY_FIX_KF_UPDATE = 0x08;  // フィルタがこの周期の観測で更新された (でなければ予測だけ)
+static constexpr uint8_t TELEMETRY_FIX_KF_INIT   = 0x10;  // フィルタをこの周期の最小二乗の解で初期化した
 static constexpr uint8_t TELEMETRY_ELAPSED_MAX   = 255;    // elapsed_ms の飽和値
 static constexpr uint16_t TELEMETRY_DT_MAX       = 65535;  // dt_ms の飽和値
 static constexpr size_t TELEMETRY_PACKET_MAX =
@@ -51,8 +54,8 @@ struct TelemetryRange {
 };
 
 // 1 周期ぶんの記録。測位欄 (fixFlags 以降) は main_tag.cpp の solvePosition() が埋める。
-// 解けなかった周期は fixFlags を 0 にして座標欄を 0 のまま送る。測距の結果だけでも
-// サーバー側で周期と欠測を追える。
+// 最小二乗の解とフィルタ後の位置は別々に持つ。解けなかった (無効な) ほうは fixFlags の
+// ビットを立てず、座標欄を 0 のまま送る。測距の結果だけでもサーバー側で周期と欠測を追える。
 struct TelemetryCycle {
     uint32_t seq;  // 周期の通番。起動ごとに 0 から数える
     uint32_t tMs;  // 周期の先頭スロットを始めた millis()
@@ -62,6 +65,12 @@ struct TelemetryCycle {
     int32_t yMm;
     int16_t zMm;
     uint16_t residualMm;
+    int32_t kfXMm;  // フィルタ後の位置
+    int32_t kfYMm;
+    int16_t kfZMm;
+    uint16_t kfSigmaMm;  // 位置の標準偏差。65535 で飽和
+    uint8_t kfUsed;      // フィルタが取り込んだ測距の本数
+    uint8_t kfRejected;  // イノベーションの大きさで棄却した測距の本数
     TelemetryRange ranges[UWB_ANCHOR_MAX];
 };
 
@@ -198,6 +207,12 @@ static size_t telemetryBuildPacket(uint8_t count)
         p = telemetryPut32(p, static_cast<uint32_t>(cycle.yMm));
         p = telemetryPut16(p, static_cast<uint16_t>(cycle.zMm));
         p = telemetryPut16(p, cycle.residualMm);
+        p = telemetryPut32(p, static_cast<uint32_t>(cycle.kfXMm));
+        p = telemetryPut32(p, static_cast<uint32_t>(cycle.kfYMm));
+        p = telemetryPut16(p, static_cast<uint16_t>(cycle.kfZMm));
+        p = telemetryPut16(p, cycle.kfSigmaMm);
+        p = telemetryPut8(p, cycle.kfUsed);
+        p = telemetryPut8(p, cycle.kfRejected);
         for (uint8_t a = 0; a < telemetryAnchorN; ++a) {
             const TelemetryRange& range = cycle.ranges[a];
             p                           = telemetryPut16(p, range.anchorId);
