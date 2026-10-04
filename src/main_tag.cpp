@@ -115,7 +115,7 @@ struct AnchorStat {
 };
 AnchorStat anchorStats[UWB_ANCHOR_MAX] = {};
 size_t anchorIndex                     = 0;
-// 直近の周期で、各スロットを始めた millis()。添字は tagConfig.anchors[] と同じ並び。
+// 直近の周期で、各スロットの測距を始めた millis()。添字は tagConfig.anchors[] と同じ並び。
 // フィルタは測距ごとにその時刻まで予測を進めてから取り込む。
 uint32_t rangeStartMs[UWB_ANCHOR_MAX] = {};
 
@@ -607,7 +607,9 @@ static void runRanging()
 
     const uint16_t anchorId      = tagConfig.anchors[anchorIndex].id;
     rangeConfig.responderAddress = anchorId;
-    rangeStartMs[anchorIndex]    = lastRangeMs;
+    // 測距の時刻は requestDSRange() の直前に取る。先頭スロットでは lastRangeMs の後に
+    // telemetryService() の送信が入るので、lastRangeMs を使うとその時間だけ先頭の測距が早く見える。
+    rangeStartMs[anchorIndex] = millis();
 
     const M5Stamp_UWBDSRangeResult result = uwb.requestDSRange(rangeConfig);
 
