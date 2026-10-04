@@ -13,7 +13,8 @@
 //
 // 予測だけでつなぐのは、最後に測距を取り込んでからの時間と位置の標準偏差の両方に
 // 上限を設けてその範囲までとし、超えたらフィルタ後の位置を無効にする。無効にした後は、
-// 次に最小二乗が解けた周期で初期化し直す。
+// 次に最小二乗が解けて、その残差 RMS が PFILTER_INIT_RESIDUAL_MAX_M 以下だった周期で
+// 初期化し直す。残差が大きい解は外れた測距を含む疑いがあるので使わず、その間は無効のままにする。
 //
 // trilateration.h と同じく Arduino にも M5 のライブラリにも依存させず、ホストの
 // C++ コンパイラでそのまま試験できるようにする。計算は float で行う。
@@ -291,8 +292,9 @@ private:
 
     float positionSigma() const
     {
-        const float v = p_[0][0] + p_[1][1];
-        return (v > 0.0f) ? sqrtf(v) : 0.0f;
+        // 共分散が壊れて (NaN や負の値になって) いたら、0 に丸めずに NaN のまま返す。step() の
+        // std::isfinite() の判定で NonFinite として無効にするためである。
+        return sqrtf(p_[0][0] + p_[1][1]);
     }
 
     bool stateFinite() const
