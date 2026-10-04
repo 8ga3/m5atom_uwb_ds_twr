@@ -43,6 +43,25 @@ static constexpr size_t TELEMETRY_PACKET_MAX =
 // 間に溜まるのは最大でも 1 パケットぶんとする。
 static constexpr size_t TELEMETRY_RING_SIZE = TELEMETRY_COUNT_MAX;
 
+// 1 パケットの上限 (バイト)。Wi-Fi の MTU 1500 から IPv4 と UDP のヘッダ (20 + 8) を引いた値で、
+// これを超えると IP フラグメントが起き、断片が 1 つ落ちるだけでパケット全体が失われる。
+static constexpr size_t TELEMETRY_PAYLOAD_MAX = 1472;
+
+// 1 サイクルだけなら、アンカーが上限の台数でも 1 パケットに収まること。
+static_assert(TELEMETRY_HEADER_SIZE + TELEMETRY_CYCLE_SIZE + (TELEMETRY_RANGE_SIZE * UWB_ANCHOR_MAX)
+                  <= TELEMETRY_PAYLOAD_MAX,
+              "one telemetry cycle must fit in a UDP payload");
+
+// アンカー anchorN 台のとき、1 パケットを TELEMETRY_PAYLOAD_MAX に収められるサイクル数の上限。
+static uint8_t telemetryBatchLimit(uint8_t anchorN)
+{
+    const size_t perCycle = TELEMETRY_CYCLE_SIZE + (TELEMETRY_RANGE_SIZE * anchorN);
+    size_t limit          = (TELEMETRY_PAYLOAD_MAX - TELEMETRY_HEADER_SIZE) / perCycle;
+    if (limit > TELEMETRY_COUNT_MAX) limit = TELEMETRY_COUNT_MAX;
+    if (limit == 0) limit = 1;
+    return static_cast<uint8_t>(limit);
+}
+
 // 送信の統計をシリアルへ出す間隔。
 static constexpr uint32_t TELEMETRY_LOG_INTERVAL_MS = 10000;
 
@@ -110,12 +129,16 @@ static void telemetryConfigure(uint16_t tagId, uint32_t bootId, const UwbConfig&
 
     // サーバー側は batch_cycles をパケット形式の上限 (16) までに制限しているが、
     // 古いサーバーから受け取ったキャッシュでも壊れたパケットを作らないようここでも抑える。
+    // さらに、アンカーの台数が多いと 16 周期では MTU を超えるので、1 パケットに収まる数まで下げる
+    // (doc/server-design.md 6.2。アンカー 8 台なら 15)。
     telemetryBatch = config.batchCycles;
     if (telemetryBatch == 0) telemetryBatch = 1;
-    if (telemetryBatch > TELEMETRY_COUNT_MAX) {
-        Serial.printf("TELEMETRY,warn=batch_clamped,requested=%u,max=%u\n", static_cast<unsigned>(telemetryBatch),
-                      static_cast<unsigned>(TELEMETRY_COUNT_MAX));
-        telemetryBatch = TELEMETRY_COUNT_MAX;
+    const uint8_t batchMax = telemetryBatchLimit(config.anchorCount);
+    if (telemetryBatch > batchMax) {
+        Serial.printf("TELEMETRY,warn=batch_clamped,requested=%u,max=%u,anchors=%u\n",
+                      static_cast<unsigned>(telemetryBatch), static_cast<unsigned>(batchMax),
+                      static_cast<unsigned>(config.anchorCount));
+        telemetryBatch = batchMax;
     }
 
     if ((config.telemetryPort == 0) || (config.telemetryHost[0] == '\0')) {
