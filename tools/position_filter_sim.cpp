@@ -5,6 +5,7 @@
 // ビルドと実行 (リポジトリのルートで):
 //   c++ -std=c++17 -O2 -I src/common tools/position_filter_sim.cpp -o /tmp/position_filter_sim
 //   /tmp/position_filter_sim [速度 m/s] [外れ値の割合] [乱数の種]
+// プロセスノイズを変えるときは、ファームと同じく -D UWB_KF_ACCEL_PSD=<値> を付けてビルドする。
 //
 // 条件:
 // - アンカー 4 台を 5 m x 4 m の四隅、高さ 1.8 m に置き、タグの高さは 0.2 m
@@ -61,14 +62,21 @@ bool blocked(int cycle, size_t anchor)
     return (cycle >= PARTIAL_FIRST) && (cycle <= PARTIAL_LAST) && ((anchor == 1) || (anchor == 2));
 }
 
+// 真値との差 (推定 - 真値) を数える。静止時は、平均の差 (偏り) と、自分の平均位置からの
+// 散らばりを分けて見られるようにする。
 struct ErrorStat {
     double sumSq = 0.0;
+    double sumDx = 0.0;
+    double sumDy = 0.0;
     double max   = 0.0;
     int count    = 0;
 
-    void add(double error)
+    void add(double dx, double dy)
     {
+        const double error = std::hypot(dx, dy);
         sumSq += error * error;
+        sumDx += dx;
+        sumDy += dy;
         if (error > max) max = error;
         ++count;
     }
@@ -76,6 +84,24 @@ struct ErrorStat {
     double rms() const
     {
         return (count > 0) ? std::sqrt(sumSq / count) : 0.0;
+    }
+
+    double meanDx() const
+    {
+        return (count > 0) ? sumDx / count : 0.0;
+    }
+
+    double meanDy() const
+    {
+        return (count > 0) ? sumDy / count : 0.0;
+    }
+
+    // 自分の平均位置からの散らばりの RMS
+    double scatter() const
+    {
+        if (count == 0) return 0.0;
+        const double v = (sumSq / count) - (meanDx() * meanDx()) - (meanDy() * meanDy());
+        return (v > 0.0) ? std::sqrt(v) : 0.0;
     }
 };
 
@@ -128,13 +154,14 @@ int main(int argc, char** argv)
 
         const bool partial = (c >= PARTIAL_FIRST) && (c <= PARTIAL_LAST);
         if (lsOk) {
-            lsAll.add(std::hypot(ls.x - truth.x, ls.y - truth.y));
+            lsAll.add(ls.x - truth.x, ls.y - truth.y);
             if (partial) ++lsPartial;
         }
         if (kf.valid) {
-            const double error = std::hypot(kf.x - truth.x, kf.y - truth.y);
-            kfAll.add(error);
-            if (partial) kfPartial.add(error);
+            const double dx = kf.x - truth.x;
+            const double dy = kf.y - truth.y;
+            kfAll.add(dx, dy);
+            if (partial) kfPartial.add(dx, dy);
             if (!kf.updated) ++predicted;
         } else {
             ++invalid;
@@ -152,13 +179,17 @@ int main(int argc, char** argv)
         inits += kf.initialized ? 1 : 0;
     }
 
-    std::printf("speed=%.1f m/s outlier_rate=%.3f seed=%u\n", static_cast<double>(speed),
-                static_cast<double>(outlierRate), seed);
+    std::printf("speed=%.1f m/s outlier_rate=%.3f seed=%u accel_psd=%.2f\n", static_cast<double>(speed),
+                static_cast<double>(outlierRate), seed, static_cast<double>(PFILTER_ACCEL_PSD));
     std::printf("least squares: rms=%.0f mm max=%.0f mm fixes=%d\n", lsAll.rms() * 1000.0, lsAll.max * 1000.0,
                 lsAll.count);
     std::printf("filter: rms=%.0f mm max=%.0f mm valid=%d predicted=%d invalid=%d inits=%d\n",
                 kfAll.rms() * 1000.0, kfAll.max * 1000.0, kfAll.count, predicted, invalid, inits);
     std::printf("outliers=%d rejected=%d\n", outliers, rejected);
+    // 静止時に意味を持つ。走行時は真値の移動に対する遅れが偏りと散らばりに入る。
+    std::printf("mean error: least squares=(%.1f, %.1f) mm scatter=%.1f mm, filter=(%.1f, %.1f) mm scatter=%.1f mm\n",
+                lsAll.meanDx() * 1000.0, lsAll.meanDy() * 1000.0, lsAll.scatter() * 1000.0, kfAll.meanDx() * 1000.0,
+                kfAll.meanDy() * 1000.0, kfAll.scatter() * 1000.0);
     std::printf("two anchors blocked: least squares fixes=%d, filter valid=%d rms=%.0f mm max=%.0f mm\n", lsPartial,
                 kfPartial.count, kfPartial.rms() * 1000.0, kfPartial.max * 1000.0);
     std::printf("all anchors blocked: filter valid for %d of %d cycles\n", blackoutValidCycles,

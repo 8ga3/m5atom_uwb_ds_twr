@@ -26,7 +26,13 @@
 // プロセスノイズ。加速度を白色雑音とみなしたときのパワースペクトル密度 (m^2/s^3)。
 // 1 秒あたりで速度の標準偏差が sqrt(この値) m/s だけ広がる。ローバーの加減速
 // (1 m/s^2 程度) を見込んで 1 とする。大きくすると追従が速く、小さくすると滑らかになる。
-static constexpr float PFILTER_ACCEL_PSD = 1.0f;
+// 実機で比べるため、ビルドフラグ -D UWB_KF_ACCEL_PSD=<値> で焼き直さずに変えられるようにする
+// (doc/multi-anchor-positioning-design.md 3.7)。
+#ifndef UWB_KF_ACCEL_PSD
+#define UWB_KF_ACCEL_PSD 1.0
+#endif
+static_assert((UWB_KF_ACCEL_PSD) > 0, "UWB_KF_ACCEL_PSD must be positive");
+static constexpr float PFILTER_ACCEL_PSD = static_cast<float>(UWB_KF_ACCEL_PSD);
 
 // 観測ノイズ (測距 1 本の標準偏差、メートル)。静止時の測距のばらつきは 10〜20 mm
 // だが、アンカーごとに 18〜70 mm の補正しきれないずれがあるので (3.6)、それを含めて 50 mm とする。
