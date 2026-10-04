@@ -26,7 +26,8 @@
 // プロセスノイズ。加速度を白色雑音とみなしたときのパワースペクトル密度 (m^2/s^3)。
 // 1 秒あたりで速度の標準偏差が sqrt(この値) m/s だけ広がる。ローバーの加減速
 // (1 m/s^2 程度) を見込んで 1 とする。大きくすると追従が速く、小さくすると滑らかになる。
-// 実機で比べるため、ビルドフラグ -D UWB_KF_ACCEL_PSD=<値> で焼き直さずに変えられるようにする
+// 実機で比べるため、ビルドフラグ -D UWB_KF_ACCEL_PSD=<値> でソースコードを書き換えずに変えられるようにする
+// (値を変えたらビルドし直して書き込む)
 // (doc/multi-anchor-positioning-design.md 3.7)。
 #ifndef UWB_KF_ACCEL_PSD
 #define UWB_KF_ACCEL_PSD 1.0
@@ -57,6 +58,10 @@ static constexpr float PFILTER_INIT_VEL_SIGMA_MPS = 1.0f;
 // 1 秒は 10Hz で 10 周期、30Hz で 30 周期にあたる。
 static constexpr uint32_t PFILTER_COAST_MAX_MS = 1000;
 static constexpr float PFILTER_POS_SIGMA_MAX_M = 0.5f;
+
+// 推定位置とアンカーの水平距離がこれ以下の測距は取り込まない (メートル)。真下にいるときの測距は
+// 水平位置の情報を持たないためで、1 mm は観測行列の水平成分がほぼ 0 になる範囲にあたる。
+static constexpr float PFILTER_MIN_HORIZONTAL_M = 0.001f;
 
 struct PositionFilterRange {
     float x;        // アンカーの設置座標 (メートル)
@@ -257,8 +262,11 @@ private:
         const float dy  = x_[1] - range.y;
         const float dz  = tagZ - range.z;
         const float rho = sqrtf((dx * dx) + (dy * dy) + (dz * dz));
-        // タグとアンカーが同じ位置に重なった場合は方向が決まらないので使わない。
-        if (!(rho > 1e-6f)) return UpdateResult::Skipped;
+        // タグがアンカーの真下 (真上) にいると、測距は水平位置について何も教えない (観測行列の水平成分が 0)。
+        // 状態も共分散も変わらないのに取り込んだと数えると、取り込めない時間の判定 (PFILTER_COAST_MAX_MS) が
+        // 遅れるので使わない。タグとアンカーが同じ位置に重なった場合 (rho が 0) もここで除かれる。
+        const float horizontal = sqrtf((dx * dx) + (dy * dy));
+        if (!(horizontal > PFILTER_MIN_HORIZONTAL_M)) return UpdateResult::Skipped;
 
         // 観測行列 H = [dx/rho, dy/rho, 0, 0]。速度には直接かからない。
         const float hx = dx / rho;
