@@ -118,7 +118,10 @@ int main(int argc, char** argv)
     std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
 
     PositionFilter filter;
-    ErrorStat lsAll, kfAll, kfPartial;
+    // lsAll / kfAll はそれぞれが有効な周期すべて (使えた周期の数を見るため)、lsCommon / kfCommon は
+    // 両方が有効な周期だけで、誤差の比較にはこちらを使う。フィルタだけが有効な周期 (最小二乗が解けない
+    // 周期や予測だけの周期) を片方にだけ入れると、同じ標本の比較にならない (doc/server-design.md 8.4 と同じ考え方)。
+    ErrorStat lsAll, kfAll, lsCommon, kfCommon, kfPartial;
     int outliers = 0, rejected = 0, inits = 0, predicted = 0, invalid = 0;
     int lsPartial = 0;
     int blackoutValidCycles = 0, resetCycle = -1, reinitCycle = -1;
@@ -166,6 +169,10 @@ int main(int argc, char** argv)
         } else {
             ++invalid;
         }
+        if (lsOk && kf.valid) {
+            lsCommon.add(ls.x - truth.x, ls.y - truth.y);
+            kfCommon.add(kf.x - truth.x, kf.y - truth.y);
+        }
         if ((c >= BLACKOUT_FIRST) && (c <= BLACKOUT_LAST) && kf.valid) ++blackoutValidCycles;
         if ((resetCycle < 0) && (c >= BLACKOUT_FIRST) && (kf.reset != PositionFilterReset::None)) {
             resetCycle = c;
@@ -181,15 +188,19 @@ int main(int argc, char** argv)
 
     std::printf("speed=%.1f m/s outlier_rate=%.3f seed=%u accel_psd=%.2f\n", static_cast<double>(speed),
                 static_cast<double>(outlierRate), seed, static_cast<double>(PFILTER_ACCEL_PSD));
-    std::printf("least squares: rms=%.0f mm max=%.0f mm fixes=%d\n", lsAll.rms() * 1000.0, lsAll.max * 1000.0,
-                lsAll.count);
-    std::printf("filter: rms=%.0f mm max=%.0f mm valid=%d predicted=%d invalid=%d inits=%d\n",
+    std::printf("both valid: cycles=%d least squares rms=%.0f mm max=%.0f mm, filter rms=%.0f mm max=%.0f mm\n",
+                lsCommon.count, lsCommon.rms() * 1000.0, lsCommon.max * 1000.0, kfCommon.rms() * 1000.0,
+                kfCommon.max * 1000.0);
+    std::printf("least squares (all fixes): rms=%.0f mm max=%.0f mm fixes=%d\n", lsAll.rms() * 1000.0,
+                lsAll.max * 1000.0, lsAll.count);
+    std::printf("filter (all valid): rms=%.0f mm max=%.0f mm valid=%d predicted=%d invalid=%d inits=%d\n",
                 kfAll.rms() * 1000.0, kfAll.max * 1000.0, kfAll.count, predicted, invalid, inits);
     std::printf("outliers=%d rejected=%d\n", outliers, rejected);
     // 静止時に意味を持つ。走行時は真値の移動に対する遅れが偏りと散らばりに入る。
-    std::printf("mean error: least squares=(%.1f, %.1f) mm scatter=%.1f mm, filter=(%.1f, %.1f) mm scatter=%.1f mm\n",
-                lsAll.meanDx() * 1000.0, lsAll.meanDy() * 1000.0, lsAll.scatter() * 1000.0, kfAll.meanDx() * 1000.0,
-                kfAll.meanDy() * 1000.0, kfAll.scatter() * 1000.0);
+    std::printf(
+        "mean error (both valid): least squares=(%.1f, %.1f) mm scatter=%.1f mm, filter=(%.1f, %.1f) mm scatter=%.1f mm\n",
+        lsCommon.meanDx() * 1000.0, lsCommon.meanDy() * 1000.0, lsCommon.scatter() * 1000.0,
+        kfCommon.meanDx() * 1000.0, kfCommon.meanDy() * 1000.0, kfCommon.scatter() * 1000.0);
     std::printf("two anchors blocked: least squares fixes=%d, filter valid=%d rms=%.0f mm max=%.0f mm\n", lsPartial,
                 kfPartial.count, kfPartial.rms() * 1000.0, kfPartial.max * 1000.0);
     std::printf("all anchors blocked: filter valid for %d of %d cycles\n", blackoutValidCycles,
