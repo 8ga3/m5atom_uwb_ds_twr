@@ -83,6 +83,13 @@ enum class PositionFilterReset : uint8_t {
     NonFinite,     // 計算の途中で NaN / 無限大が出た
 };
 
+// 測距 1 本ごとの扱い。テレメトリの測距レコードの kf 欄にそのままの値で入れる (doc/server-design.md 6.2)。
+enum class PositionFilterRangeOutcome : uint8_t {
+    Unused   = 0,  // 取り込まなかった (フィルタが無効、初期化した周期、アンカーの真下で飛ばした)
+    Accepted = 1,  // 取り込んだ
+    Rejected = 2,  // イノベーションの大きさで棄却した
+};
+
 // 1 周期ぶんの処理の結果。
 struct PositionFilterCycle {
     bool valid;         // 周期の終わりでフィルタ後の位置が有効か
@@ -133,11 +140,18 @@ public:
     // lsOk / lsX / lsY / lsResidual / lsUsed は同じ周期の最小二乗の結果。フィルタが無効な
     // ときの初期化にだけ使う。初期化した周期の測距は、最小二乗の解に使ったものと同じなので
     // フィルタへは取り込まない (同じ観測を 2 回使うことになる)。
+    //
+    // outcomes を渡すと、ranges と同じ並びで測距ごとの扱いを書き込む (n 個ぶんの領域が要る)。
+    // 取り込んだ後でこの周期のうちにフィルタを無効にした場合も、測距ごとの判定はそのまま残す。
     PositionFilterCycle step(const PositionFilterRange* ranges, size_t n, float tagZ, uint32_t endMs, bool lsOk,
-                             float lsX, float lsY, float lsResidual, uint8_t lsUsed)
+                             float lsX, float lsY, float lsResidual, uint8_t lsUsed,
+                             PositionFilterRangeOutcome* outcomes = nullptr)
     {
         PositionFilterCycle out = {};
         out.reset               = PositionFilterReset::None;
+        if (outcomes != nullptr) {
+            for (size_t i = 0; i < n; ++i) outcomes[i] = PositionFilterRangeOutcome::Unused;
+        }
 
         if (valid_) {
             for (size_t i = 0; i < n; ++i) {
@@ -146,9 +160,11 @@ public:
                     case UpdateResult::Accepted:
                         ++out.used;
                         lastUpdateMs_ = ranges[i].tMs;
+                        if (outcomes != nullptr) outcomes[i] = PositionFilterRangeOutcome::Accepted;
                         break;
                     case UpdateResult::Rejected:
                         ++out.rejected;
+                        if (outcomes != nullptr) outcomes[i] = PositionFilterRangeOutcome::Rejected;
                         break;
                     case UpdateResult::Skipped:
                         break;
