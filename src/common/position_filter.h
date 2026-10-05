@@ -36,9 +36,11 @@
 static_assert((UWB_KF_ACCEL_PSD) > 0, "UWB_KF_ACCEL_PSD must be positive");
 static constexpr float PFILTER_ACCEL_PSD = static_cast<float>(UWB_KF_ACCEL_PSD);
 
-// 観測ノイズ (測距 1 本の標準偏差、メートル)。静止時の測距のばらつきは 10〜20 mm
-// だが、アンカーごとに 18〜70 mm の補正しきれないずれがあるので (3.6)、それを含めて 50 mm とする。
-static constexpr float PFILTER_RANGE_SIGMA_M = 0.05f;
+// 観測ノイズ (測距 1 本の標準偏差、メートル)。静止時の測距のばらつきは 10〜20 mm だが、
+// アンカーごとの補正しきれないずれが 18〜70 mm (3.6) から、置き方によっては 280 mm 近くまである。
+// 50 mm では、ずれの大きいアンカーが棄却のしきい値を超えて毎周期棄却され続け、残りの測距に合わせた
+// 位置で固まった (issue #12)。そのため 80 mm とし、静止時の棄却の幅を約 ±370 mm に広げる。
+static constexpr float PFILTER_RANGE_SIGMA_M = 0.08f;
 
 // イノベーションによる棄却のしきい値。イノベーションの 2 乗をその分散で割った値
 // (正規化したイノベーションの 2 乗) がこの値を超えた測距は取り込まない。
