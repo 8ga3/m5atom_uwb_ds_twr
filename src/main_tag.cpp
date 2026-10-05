@@ -247,19 +247,25 @@ static bool posDetailLogDue(uint32_t& lastMs, bool& logged)
 }
 
 // フィルタを 1 周期ぶん進め、テレメトリのフィルタ欄を埋める。inputs は solvePosition() が
-// 最小二乗に渡したものと同じ測距で、巡回の順 (= 時刻順) に並んでいる。
-static void filterPosition(TelemetryCycle& cycle, const PositionFilterRange* inputs, size_t count,
-                           const TrilatResult& fix)
+// 最小二乗に渡したものと同じ測距で、巡回の順 (= 時刻順) に並んでいる。anchorIndex[k] は
+// inputs[k] が cycle.ranges[] のどの測距かを表す。
+static void filterPosition(TelemetryCycle& cycle, const PositionFilterRange* inputs, const uint8_t* anchorIndex,
+                           size_t count, const TrilatResult& fix)
 {
     // 結果の位置は周期の最後のスロットの時刻まで予測を進めたものにする。
     const uint32_t endMs   = rangeStartMs[tagConfig.anchorCount - 1];
     const uint32_t startUs = micros();
+    PositionFilterRangeOutcome outcomes[UWB_ANCHOR_MAX];
     const PositionFilterCycle kf =
         positionFilter.step(inputs, count, static_cast<float>(TAG_Z_MM) / 1000.0f, endMs,
-                            fix.status == TrilatStatus::Ok, fix.x, fix.y, fix.residualRms, fix.used);
+                            fix.status == TrilatStatus::Ok, fix.x, fix.y, fix.residualRms, fix.used, outcomes);
     const uint32_t kfUs = micros() - startUs;
     if (kfUs > positionStat.kfMaxUs) positionStat.kfMaxUs = kfUs;
     lastFilter = kf;
+
+    // どのアンカーの測距を棄却したかをテレメトリで追えるよう、測距レコードごとに扱いを入れる。
+    // フィルタに渡さなかった測距 (失敗、有り得ない負の値) は TelemetryCycle{} の初期値 (0 = 使っていない) のまま。
+    for (size_t k = 0; k < count; ++k) cycle.ranges[anchorIndex[k]].kf = static_cast<uint8_t>(outcomes[k]);
 
     positionStat.kfRejected += kf.rejected;
     if (kf.initialized) ++positionStat.kfInits;
@@ -315,6 +321,7 @@ static void solvePosition(TelemetryCycle& cycle)
     // 測距値には構成の bias_mm を足す (doc/server-design.md 4.1)。
     TrilatInput inputs[UWB_ANCHOR_MAX];
     PositionFilterRange filterInputs[UWB_ANCHOR_MAX];
+    uint8_t filterAnchorIndex[UWB_ANCHOR_MAX];
     size_t count = 0;
     for (size_t i = 0; i < tagConfig.anchorCount; ++i) {
         const TelemetryRange& range = cycle.ranges[i];
@@ -339,6 +346,7 @@ static void solvePosition(TelemetryCycle& cycle)
             (static_cast<float>(range.distanceMm) + static_cast<float>(tagConfig.biasMm)) / 1000.0f;
         filterInputs[count] = {inputs[count].x, inputs[count].y, inputs[count].z, inputs[count].range,
                                rangeStartMs[i]};
+        filterAnchorIndex[count] = static_cast<uint8_t>(i);
         ++count;
     }
 
@@ -352,7 +360,7 @@ static void solvePosition(TelemetryCycle& cycle)
 
     // フィルタは最小二乗の成否によらず毎周期回す。解けなかった周期も、残った測距で
     // 更新するか、予測だけでつなぐ。
-    filterPosition(cycle, filterInputs, count, fix);
+    filterPosition(cycle, filterInputs, filterAnchorIndex, count, fix);
 
     // 解けなかった周期は fix_flags の bit0 を立てず、座標欄は 0 のまま送る。サーバーは
     // この周期の最小二乗の座標を NULL で保存する。used_count には解に渡した測距の数を入れ、

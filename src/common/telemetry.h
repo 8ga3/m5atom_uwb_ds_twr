@@ -24,10 +24,10 @@
 
 // パケット形式 (doc/server-design.md 6.2)。すべてリトルエンディアンで、パディングは入れない。
 static constexpr uint32_t TELEMETRY_MAGIC        = 0x54425755;  // 'U' 'W' 'B' 'T'
-static constexpr uint8_t TELEMETRY_VERSION       = 2;
+static constexpr uint8_t TELEMETRY_VERSION       = 3;
 static constexpr size_t TELEMETRY_HEADER_SIZE    = 24;
 static constexpr size_t TELEMETRY_CYCLE_SIZE     = 30;
-static constexpr size_t TELEMETRY_RANGE_SIZE     = 8;
+static constexpr size_t TELEMETRY_RANGE_SIZE     = 9;
 static constexpr uint8_t TELEMETRY_COUNT_MAX     = 16;  // 1 パケットに詰められるサイクル数の上限
 static constexpr uint8_t TELEMETRY_FIX_OK        = 0x01;
 static constexpr uint8_t TELEMETRY_FIX_3D        = 0x02;
@@ -70,6 +70,7 @@ struct TelemetryRange {
     uint8_t status;  // 0 = OK、それ以外は M5Stamp_UWBError の値
     uint8_t elapsedMs;
     int32_t distanceMm;  // status != 0 のときは 0
+    uint8_t kf;          // フィルタでの扱い (PositionFilterRangeOutcome の値。0 = 使っていない、1 = 取り込んだ、2 = 棄却)
 };
 
 // 1 周期ぶんの記録。測位欄 (fixFlags 以降) は main_tag.cpp の solvePosition() が埋める。
@@ -130,7 +131,7 @@ static void telemetryConfigure(uint16_t tagId, uint32_t bootId, const UwbConfig&
     // サーバー側は batch_cycles をパケット形式の上限 (16) までに制限しているが、
     // 古いサーバーから受け取ったキャッシュでも壊れたパケットを作らないようここでも抑える。
     // さらに、アンカーの台数が多いと 16 周期では MTU を超えるので、1 パケットに収まる数まで下げる
-    // (doc/server-design.md 6.2。アンカー 8 台なら 15)。
+    // (doc/server-design.md 6.2。アンカー 8 台なら 14)。
     telemetryBatch = config.batchCycles;
     if (telemetryBatch == 0) telemetryBatch = 1;
     const uint8_t batchMax = telemetryBatchLimit(config.anchorCount);
@@ -242,6 +243,7 @@ static size_t telemetryBuildPacket(uint8_t count)
             p                           = telemetryPut8(p, range.status);
             p                           = telemetryPut8(p, range.elapsedMs);
             p                           = telemetryPut32(p, static_cast<uint32_t>(range.distanceMm));
+            p                           = telemetryPut8(p, range.kf);
         }
     }
     return static_cast<size_t>(p - telemetryPacket);
