@@ -143,6 +143,35 @@ TAG は最小二乗とは別に、測距 1 本ずつを観測にする拡張カ�
 - LCD の座標は、観測で更新した周期は緑、予測だけでつないだ周期は黄で出す。無効な周期は `POS:NG` と、
   最小二乗が解けなかった理由 (残差が大きくて初期化に使わなかったときは `RESID`) を出す。
 
+### 10. アンカー座標の自動推定 (self-survey、ANCHOR のみ)
+
+アンカーどうしで相互に測距し、その結果からアンカーの座標を推定する。設計は
+[doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 4 章を参照。
+USB でつなぐのは 1 台だけでよく、他のアンカーは電源を入れて通常どおり動かしておく。
+
+1. タグを止める。survey は専用の PAN ID を使うのでタグに答えることはないが、フレームが衝突すると再送が増える
+2. PC につないだアンカーのシリアルモニタを開き、出力をファイルに残す
+
+   ```sh
+   pio device monitor -e atoms3-anchor | tee survey.log
+   ```
+
+3. `survey` に続けて、測距するアンカーの ID を 10 進で並べて送る。自機の ID は省略できる。
+   `n=` で 1 組あたりの測距回数 (既定 20、1〜24) を変えられる
+
+   ```text
+   survey 256 257 258 259
+   survey n=10 256 257 258 259
+   ```
+
+4. 送ったアンカーがコーディネータになり、他のアンカーを survey モードに入れる (LED が青になる)。
+   全ての順序付きの組を測り終えると `SURVEY_END` が出て、各アンカーは通常の応答に戻る。
+   4 台なら 12 組になる。1 組あたり 1 秒程度の見込みで、実機ではまだ測っていない
+5. 保存したログを location_server_uwb の `tools/survey_solve.py` に渡して座標を推定する
+
+組ごとの結果は `SURVEY_PAIR,i=0x0100,j=0x0101,status=OK,try=20,ok=20,median_mm=...,mm=...` の形で出る。
+`status` が `OK` 以外の組は測距できなかった組で、理由が `error=` に付く。
+
 ## 状態表示
 
 AtomS3 / AtomS3R は LCD に状態を表示する。画面のない AtomS3 Lite / Atom Lite は RGB LED 1 個の色で状態を表す。
@@ -151,6 +180,7 @@ AtomS3 / AtomS3R は LCD に状態を表示する。画面のない AtomS3 Lite 
 - 黄: 無通信で待機中
 - 赤: UWB トランシーバーが使えない、または測距を開始できない (TAG でサーバー構成が無い場合を含む)
 - マゼンタ: シリアルコンソールでの設定入力待ち
+- 青: self-survey 中 (ANCHOR のみ)。画面付きでは `SURVEY` と、測距中の相手の ID を出す
 
 Atom Matrix は同じ色で、5x5 の LED アレイに自機の ID (TAG ID またはアンカー ID) を 10 進で表示する。
 

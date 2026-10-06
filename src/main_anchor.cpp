@@ -7,6 +7,7 @@
 #include "common/host_init.h"
 #include "common/hw_pins.h"
 #include "common/status.h"
+#include "common/survey.h"
 #include "common/uwb_link.h"
 
 // runResponder() は txMarginUs が入ったかどうかで、RangeFrameMismatch が Poll 待ち (他の
@@ -83,10 +84,24 @@ DisplayState lastDisplayState = DisplayState::Init;
 bool lastWaitingWasNoPoll     = false;
 uint32_t lastSuccessMs        = 0;
 
+// survey を終えたあと、通常の応答の表示に戻す。
+static void endSurvey()
+{
+    lastDisplayState = DisplayState::Init;
+    updateStatus(DisplayState::Init, 0.0f, 0, 0, "----");
+}
+
 static void runResponder()
 {
     // Poll/Final の交信を待ち、DS-TWR の測距結果を返す。
     const M5Stamp_UWBDSResponderResult result = uwb.respondDSRange(rangeConfig);
+
+    // 他のアンカーがコーディネータになって survey を始めた (survey.h)。
+    if (surveyIsWakeBeacon(result)) {
+        surveyRunMember(anchorId);
+        endSurvey();
+        return;
+    }
 
     const int32_t marginUs = result.txMarginUs;
     if ((marginUs != M5STAMP_UWB_TX_MARGIN_UNKNOWN) && (!respMarginSeen || (marginUs < minRespMarginUs))) {
@@ -176,6 +191,49 @@ static void runResponder()
     }
 }
 
+// シリアルから受けた 1 行のコマンド。今は survey の開始 (survey.h) だけを受け付ける。
+static char commandLine[128];
+static size_t commandLen     = 0;
+static bool commandOverflow  = false;
+
+static void runCommand(const char* line)
+{
+    uint16_t ids[SURVEY_ANCHORS_MAX];
+    size_t count       = 0;
+    uint8_t samples    = 0;
+    const char* reason = "";
+    if (!surveyParseCommand(line, anchorId, ids, count, samples, reason)) {
+        Serial.printf("CMD,result=ERR,reason=%s,usage=survey [n=<1-%u>] <anchor id (decimal)> ...\n", reason,
+                      static_cast<unsigned>(SURVEY_SAMPLES_MAX));
+        return;
+    }
+    surveyRunCoordinator(anchorId, ids, count, samples);
+    endSurvey();
+}
+
+// 応答ループの合間にシリアルの入力を読み、改行で 1 行のコマンドとして実行する。
+static void serviceSerial()
+{
+    for (int c = Serial.read(); c >= 0; c = Serial.read()) {
+        if ((c != '\r') && (c != '\n')) {
+            if (commandLen + 1 < sizeof(commandLine)) {
+                commandLine[commandLen++] = static_cast<char>(c);
+            } else {
+                commandOverflow = true;
+            }
+            continue;
+        }
+        commandLine[commandLen] = '\0';
+        if (commandOverflow) {
+            Serial.println("CMD,result=ERR,reason=too_long");
+        } else if (commandLen > 0) {
+            runCommand(commandLine);
+        }
+        commandLen      = 0;
+        commandOverflow = false;
+    }
+}
+
 void setup()
 {
     beginHost();
@@ -209,6 +267,7 @@ void loop()
 {
     if (uwbReady) {
         runResponder();
+        serviceSerial();
     } else {
         // LED の ID 表示を切り替え続けられるよう、短い間隔で回す。
         delay(100);
