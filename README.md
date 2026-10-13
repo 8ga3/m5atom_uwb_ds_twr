@@ -152,10 +152,12 @@ USB でつなぐのは 1 台だけでよく、他のアンカーは電源を入�
 1. タグを止める。survey は専用の PAN ID を使うのでタグに答えることはないが、フレームが衝突すると再送が増える
 2. PC につないだアンカーのシリアルモニタを開き、出力をファイルに残す。`pio device monitor` は標準出力が
    端末でないと起動しないので、`| tee` にはつながず、組み込みの `log2file` フィルタで保存する。
-   ログは `logs/device-monitor-<日時>.log` に書かれ、起動時に保存先が表示される
+   ログは `logs/device-monitor-<日時>.log` に書かれ、起動時に保存先が表示される。
+   ファームは入力を表示し返さないので、`--echo` で打った文字を表示し、`send_on_enter` で Enter を押すまで
+   まとめてから送る
 
    ```sh
-   pio device monitor -e atoms3-anchor -f default -f log2file
+   pio device monitor -e atoms3-anchor --echo -f send_on_enter -f default -f log2file
    ```
 
 3. `survey` に続けて、測距するアンカーの ID を 10 進で並べて送る。自機の ID は省略できる。
