@@ -150,10 +150,12 @@ TAG は最小二乗とは別に、測距 1 本ずつを観測にする拡張カ�
 USB でつなぐのは 1 台だけでよく、他のアンカーは電源を入れて通常どおり動かしておく。
 
 1. タグを止める。survey は専用の PAN ID を使うのでタグに答えることはないが、フレームが衝突すると再送が増える
-2. PC につないだアンカーのシリアルモニタを開き、出力をファイルに残す
+2. PC につないだアンカーのシリアルモニタを開き、出力をファイルに残す。`pio device monitor` は標準出力が
+   端末でないと起動しないので、`| tee` にはつながず、組み込みの `log2file` フィルタで保存する。
+   ログは `logs/device-monitor-<日時>.log` に書かれ、起動時に保存先が表示される
 
    ```sh
-   pio device monitor -e atoms3-anchor | tee survey.log
+   pio device monitor -e atoms3-anchor -f default -f log2file
    ```
 
 3. `survey` に続けて、測距するアンカーの ID を 10 進で並べて送る。自機の ID は省略できる。

@@ -4,3 +4,5 @@
 .vscode/launch.json
 .vscode/ipch
 .claude/settings.local.json
+# pio device monitor の log2file フィルタの出力
+logs/
