@@ -257,9 +257,13 @@ static void surveyAck(const SurveyFrame& request)
 static bool surveyWaitAck(uint16_t from, char kind, uint8_t seq, uint32_t timeoutMs, SurveyFrame* deferred)
 {
     const uint32_t startMs = millis();
-    while ((millis() - startMs) < timeoutMs) {
+    for (;;) {
+        // 期限の判定と残り時間の計算に同じ経過時間を使う。別々に millis() を読むと、その間に期限を
+        // 過ぎたとき残り時間がアンダーフローし、受信を 49 日待つことになる。
+        const uint32_t elapsedMs = millis() - startMs;
+        if (elapsedMs >= timeoutMs) break;
         SurveyFrame frame;
-        if (!surveyReceive(frame, timeoutMs - (millis() - startMs))) continue;
+        if (!surveyReceive(frame, timeoutMs - elapsedMs)) continue;
         if ((frame.src == from) && (frame.kind == SURVEY_MSG_ACK) && (frame.bodyLen >= 2) &&
             (frame.body[0] == static_cast<uint8_t>(kind)) && (frame.body[1] == seq)) {
             return true;
@@ -311,7 +315,8 @@ static M5Stamp_UWBDSRangeConfig surveyRangeConfig(uint16_t initiator, uint16_t r
 // 応答側として、要求側 (initiator) の Poll が途絶えるまで respondDSRange() を回す。
 // 応答側で成功した測距でも、距離通知が失われると要求側では失敗になり、要求側は試行を続ける。
 // そのため成功の回数では抜けず、要求側が試す回数の上限 (maxTries) に達したときだけ早く抜ける。
-static void surveyRespond(uint16_t initiator, uint8_t maxTries)
+// requestSeq は応答ループへ入る要求 (SVR) のシーケンス番号で、その再送を見分けるのに使う。
+static void surveyRespond(uint16_t initiator, uint8_t maxTries, uint8_t requestSeq)
 {
     M5Stamp_UWBDSRangeConfig config = surveyRangeConfig(0x0000, surveySelf);
     config.hostTimeoutMs            = SURVEY_RESPOND_IDLE_MS;
@@ -326,11 +331,12 @@ static void surveyRespond(uint16_t initiator, uint8_t maxTries)
         if (result.requester != initiator) continue;
         // Poll を受けて Response を予約したかは txMarginUs で分かる (main_anchor.cpp の runResponder())。
         const bool polled = result.success || (result.txMarginUs != M5STAMP_UWB_TX_MARGIN_UNKNOWN);
-        // 測距が始まる前は、要求側からのフレームをすべて活動として数える。応答ループへ入る要求 (SVR)
-        // への応答が失われると、要求側は SVR を送り直してから測距を始めるため。測距が始まった後は
-        // Poll だけを数える。測距を終えた要求側はコーディネータへ報告 (SVD) を送り直し続けるので、
-        // それも数えると、自機がコーディネータのときに応答ループから抜けられず報告を受けそこねる。
-        if (ranging && !polled) continue;
+        // Poll と、測距が始まる前の SVR の再送 (同じシーケンス番号) だけを活動として数える。SVR への
+        // 応答が失われると、要求側は SVR を送り直してから測距を始めるため。それ以外のフレームは数えない。
+        // 測距を終えた要求側はコーディネータへ報告 (SVD) を送り直し続けるので、それも数えると、自機が
+        // コーディネータのときに応答ループから抜けられず報告を受けそこねる。Poll を 1 回も受けないまま
+        // 要求側が諦めた場合も同じで、失敗の報告を取りこぼして NO_REPORT になる。
+        if (!polled && (ranging || (result.sequence != requestSeq))) continue;
         ranging        = ranging || polled;
         lastActivityMs = millis();
         if (result.success) ++served;
@@ -464,7 +470,7 @@ static bool surveyHandleFrame(const SurveyFrame& first)
                 char detail[16];
                 snprintf(detail, sizeof(detail), "<-%u", static_cast<unsigned>(frame.src));
                 surveyShow(detail);
-                surveyRespond(frame.src, frame.body[0]);
+                surveyRespond(frame.src, frame.body[0], frame.seq);
                 return true;
             }
             case SURVEY_MSG_INIT:
