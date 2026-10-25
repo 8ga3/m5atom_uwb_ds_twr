@@ -572,6 +572,8 @@ static void surveyCollectPair(uint16_t initiator, uint16_t target, uint8_t sampl
     out.initiator = initiator;
     out.responder = target;
     out.status    = acked ? SurveyPairStatus::NoReport : SurveyPairStatus::NoAck;
+    // 応答も報告も来ないまま終わったときの理由。報告が届けば、その報告の値で上書きする。
+    out.lastError = M5Stamp_UWBError::RxTimeout;
 
     // この指示への報告なら結果に入れる。前の組の報告の再送 (コーディネータの応答が失われた場合) は捨てる。
     auto takeReport = [&](const SurveyFrame& frame) {
