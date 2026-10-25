@@ -1,0 +1,257 @@
+# location_server_uwb
+
+UWB 測位のデバッグ・精度評価に使うサーバーである。アンカーの ID と設置座標を保持してタグへ配信し、
+タグから送られてくる測距結果と自己位置推定結果を蓄積して可視化する。
+
+バージョン: `0.1.0-dev`
+
+設計の正本は [doc/server-design.md](doc/server-design.md) である。実装と文書が食い違う変更は行わない。
+
+`doc/` 以下の設計メモは、タグ側 (ファームウェア) の
+[m5atom_uwb_ds_twr](https://github.com/8ga3/m5atom_uwb_ds_twr) リポジトリと同じ内容を保つ。
+片方だけを書き換えない。
+
+- [doc/server-design.md](doc/server-design.md) - 測位サーバーの設計メモ (本リポジトリの正本)
+- [doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) -
+  マルチアンカー UWB 測位システムの設計メモ
+- [doc/downlink-tdoa-design.md](doc/downlink-tdoa-design.md) - Downlink-TDoA 方式の設計メモ
+
+後ろの 2 文書はタグ側 (ファームウェア) の設計であり、本リポジトリの実装対象ではない。
+サーバーの設計判断がタグ側の前提に依存するため、参照できるように置いている。
+文中の `../src/` へのリンクはファームウェア側のソースを指すので、本リポジトリでは解決しない。
+
+## 実装状況
+
+フェーズ C (ライブ配信と可視化ページ) までを実装している。
+
+| フェーズ | 内容 | 状態 |
+| --- | --- | --- |
+| A | SQLite スキーマ、構成配信 API、アンカー管理 API、座標入力 CLI | 実装済み |
+| B | UDP によるテレメトリ収集、セッション開始通知、UDP ダンパ | 実装済み。実機で測定済み (AP 切断後に再接続する瞬間の周期のみ未確認) |
+| C | ライブ配信 (WebSocket)、参照 API、可視化ページ | 実装済み。実機のタグでライブ表示を確認済み (既知座標での静的試験と、走行中の遅延の測定は未実施) |
+| D | self-survey 連携 | アンカーの一括置換 API (`POST /api/v1/anchors:bulk`) と座標推定 CLI (`tools/survey_solve.py`) を実装済み。実機の survey の結果での投入は未実施 |
+
+フェーズ A の「タグ側の Wi-Fi 取得 + NVS キャッシュ」と、フェーズ B の「タグ側のリングバッファと UDP 送信」
+「測距ループと Wi-Fi 監視のコア分離」はファームウェア側の作業であり、このリポジトリには含まれない。
+
+## 必要なもの
+
+- Python 3.14
+- [uv](https://docs.astral.sh/uv/)
+
+## セットアップ
+
+```sh
+uv sync
+```
+
+## 起動
+
+```sh
+uv run python -m location_server --db data/2026-09-21-run1.db --port 8000
+```
+
+バージョンは `--version` で確認できる。起動時にもログの先頭へ
+`SERVER_VERSION,version=...` として出力する。
+
+```sh
+uv run python -m location_server --version
+```
+
+設定は環境変数でも与えられる。
+
+| 環境変数 | 既定値 | 内容 |
+| --- | --- | --- |
+| `UWB_DB_PATH` | `data/location.db` | SQLite ファイルのパス。実験ごとに分ける |
+| `UWB_HOST` | `0.0.0.0` | 待ち受けアドレス |
+| `UWB_PORT` | `8000` | 待ち受けポート |
+| `UWB_AUTH_TOKEN` | (未設定) | 設定すると書き込み系 API に `X-Auth-Token` ヘッダを要求する |
+| `UWB_UDP_PORT` | `47100` | テレメトリの UDP 受信ポート (`--udp-port`)。`0` で受信しない。待ち受けアドレスは `UWB_HOST` と共通 |
+
+コマンドライン引数を与えた場合は環境変数より優先される。
+
+## エンドポイント
+
+| メソッド | パス | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/v1/config` | タグへ配る構成一式。`ETag` / `If-None-Match` による `304` に対応する |
+| `GET` | `/api/v1/config/revisions/{rev}` | 過去のリビジョン時点の構成 |
+| `PUT` | `/api/v1/config/telemetry` | テレメトリ送信先と `batch_cycles` の更新 |
+| `POST` | `/api/v1/hello` | タグのセッション開始通知。共有トークンは要求しない |
+| `GET` | `/api/v1/anchors` | アンカー一覧。無効化されているものも含む |
+| `PUT` | `/api/v1/anchors/{id}` | アンカー 1 台の登録・更新 |
+| `GET` | `/api/v1/sessions` | セッション一覧 (新しい順。測位成功率・欠測率つき) |
+| `GET` | `/api/v1/sessions/{id}/track` | 推定位置の軌跡 (列指向、`max_points` で間引き) |
+| `GET` | `/api/v1/sessions/{id}/ranges` | アンカーごとの測距 (列指向、`anchor_id` で絞り込み) |
+| `GET` | `/api/v1/sessions/{id}/summary` | セッションの集計と、当時のアンカー座標 |
+| `WS` | `/api/v1/ws/live` | ライブ配信 (`subscribe` / `unsubscribe`) |
+| `GET` | `/` | 可視化ページ |
+| `GET` | `/healthz` | 死活確認 |
+
+座標は API の JSON でのみメートル表記とし、通信と DB 内部では整数ミリメートルで保持する。
+アンカー ID は UWB の responder address そのもので、JSON では `0x0100` 形式の文字列で表す。
+
+構成を書き換えると `config_meta` に新しい `rev` が積まれ、その時点の全アンカーが `config_anchor` へ
+記録される。走行後に `GET /api/v1/config/revisions/{rev}` を引けば、当時の座標表をそのまま復元できる。
+
+## 座標の入力
+
+`tools/anchor_cli.py` はサーバーの管理 API を叩く CLI である。追加の依存はない。
+
+```sh
+# アンカーを登録する (座標はメートル)
+uv run python tools/anchor_cli.py set 0x0100 --x 0 --y 0 --z 1.8 --label 北西の柱
+uv run python tools/anchor_cli.py set 0x0101 --x 5.12 --y 0 --z 1.8
+uv run python tools/anchor_cli.py set 0x0102 --x 5.08 --y 4.31 --z 1.8
+uv run python tools/anchor_cli.py set 0x0103 --x 0.03 --y 4.29 --z 1.8
+
+# 座標表ファイル (JSON) の内容でアンカー表を丸ごと置き換える。ファイルに無いアンカーは削除される
+uv run python tools/anchor_cli.py apply anchors.json --dry-run   # 差分の表示だけ
+uv run python tools/anchor_cli.py apply anchors.json
+
+# 一覧を見る
+uv run python tools/anchor_cli.py list
+
+# テレメトリ送信先を設定する (port 0 でタグ側の送信を停止する)
+uv run python tools/anchor_cli.py telemetry --host 192.168.1.10 --port 47100 --batch-cycles 4
+
+# タグへ配られる構成を確認する
+uv run python tools/anchor_cli.py config
+```
+
+`apply` は `POST /api/v1/anchors:bulk` を使い、何台を書き換えても構成リビジョン (`rev`) は 1 つだけ進む。
+送る前に現在の構成との差分 (`+` 追加、`-` 削除、`~` 変更) を表示し、差分が無ければ送らない。
+座標表ファイルは次の形式の JSON で書く。
+
+```json
+{
+  "note": "部屋 1",
+  "anchors": [
+    { "id": "0x0100", "x": 0.00, "y": 0.00, "z": 1.80, "label": "北西の柱" },
+    { "id": "0x0101", "x": 5.12, "y": 0.00, "z": 1.80 },
+    { "id": "0x0102", "x": 5.08, "y": 4.31, "z": 1.80 },
+    { "id": "0x0103", "x": 0.03, "y": 4.29, "z": 1.80, "enabled": false }
+  ]
+}
+```
+
+- `id`、`x`、`y`、`z` は必須。`id` は `0x0100` 形式または 10 進数の文字列、座標はメートルで書く
+- `label` と `enabled` (既定は `true`) は省略できる。`enabled` が `false` のアンカーはタグへ配られない
+- `note` は構成リビジョンに残すメモで、省略できる。`--note` を付けるとそちらが優先される
+- `source` に `survey` を書くと、登録したアンカーの `source` が `survey` になる (既定は `manual`)
+
+接続先は `--server` または環境変数 `UWB_SERVER_URL` で変えられる。
+`UWB_AUTH_TOKEN` を設定してサーバーを起動している場合は、CLI 側にも同じ環境変数か `--token` を与える。
+
+### アンカー間の相互測距から座標を推定する (self-survey)
+
+`tools/survey_solve.py` は、アンカーどうしの相互測距のログから座標を推定し、`apply` に渡せる座標表を書き出す。
+サーバーには接続せず、追加の依存もない。手順の詳細は
+[doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 4 章を参照。
+
+1. PC につないだアンカーのシリアルモニタで `survey 256 257 258 259` (アンカー ID を 10 進で並べる) を送り、
+   出力をファイルに保存する (ファームウェア側の README を参照)
+2. ログから座標を推定する。`--reference` には手測りの座標表を渡す。高さ (z) はここから取り、推定結果との差も出す
+
+   ```sh
+   uv run python tools/survey_solve.py survey.log --reference rooms/room-1.json --out survey.json
+   ```
+
+3. 残差や手測りとの差を確かめてから、`apply` で投入する
+
+   ```sh
+   uv run python tools/anchor_cli.py apply survey.json --dry-run
+   ```
+
+- 推定するのは水平位置 (x, y) と、全ての測距に共通するバイアス `b`。`b` は座標表には入らない
+- アンカーが 4 台だと冗長度が 0 になり、残差では測距の誤りを見つけられない。`--fixed-bias-mm` で `b` を
+  固定すると冗長度が 1 残る。`b` を推定したままでは配置が一意に決まらないので、`--fixed-bias-mm` か、
+  手測りと突き合わせたことを示す `--accept-nonunique` を付けないと座標表を書き出さない
+- 残差の大きい組は `--exclude 0x0100-0x0102` で外して計算し直せる
+- 測距が 1 本以下のアンカーがあるなど、座標が一意に決まらない入力はエラーになり、座標表を書き出さない
+- 測距の組が足りず配置が一意に決まらない場合 (一直線に並ぶアンカーを取り除くとつながりが分かれる、
+  1 本でも欠けると形が崩れる) は、該当するアンカーや組を表示する。形を目で確かめてから `--accept-nonunique` を付けると書き出す
+- 測距値が 1 本も無いアンカーがある場合と、`--reference` の座標表と水平位置の異なる共通のアンカーが
+  2 台未満の場合も、座標表を書き出さない。`apply` で、そのアンカーの削除や座標系の置き換えが起きるのを防ぐため
+- `--reference` の座標表と共通のアンカーが 3 台未満か一直線に並ぶ (手測りと推定のどちらかで) と、
+  鏡映の有無を判定できない。逆の向きとの差が 50 mm 以内のときも判定しない。
+  向きを目で確かめ、`--mirror yes` / `--mirror no` で指定する
+
+## テレメトリの収集
+
+サーバーは起動すると UDP の `47100` 番でタグからのテレメトリを待ち受け、100 ms ごと (または 500 行ごと) に
+まとめて SQLite へ書き込む。タグに送信させるには、`telemetry` コマンドで送信先をサーバーの IP と受信ポートへ向ける。
+受信ポートと構成の送信先ポートが食い違っていると、起動時に警告が出る。
+
+受信状況は 10 秒ごとに `INGEST_STATS,...` の 1 行としてログへ出る。`rejected` は形式が合わずに捨てたパケット、
+`lost_cycles` は `seq` の欠番 (UDP で落ちたサイクル)、`dropped_packets` は DB が詰まって保存を諦めたパケットの数である。
+
+`tools/dump_udp.py` はパケットを受信してデコードし、1 サイクル 1 行で表示する。サーバーと同じポートは
+同時に待ち受けられないので、サーバーを止めるか別のポートで使う。`send` はタグの代わりに擬似パケットを送る。
+
+```sh
+# 受信した内容を表示する
+uv run python tools/dump_udp.py listen --port 47100
+
+# 擬似タグとして 40 サイクル (4 サイクルずつ束ねて) 送る
+uv run python tools/dump_udp.py send --host 127.0.0.1 --port 47100 --cycles 40
+```
+
+## 可視化ページ
+
+サーバーを起動してブラウザで `http://<サーバーの IP>:8000/` を開く。ライブラリ (uPlot) は同梱しているので、
+外部ネットワークに出られない環境でも動く。
+
+- 「表示」で「ライブ」を選ぶと、指定したタグ ID の直近 30 秒を WebSocket で受けて描き続ける。
+  状態ランプは直近 1 秒の測距成功率 (緑 90% 以上 / 黄 50% 以上 / 赤それ未満) を表す。
+  「一時停止」は描画だけを止め、受信は続ける。再開すると最新の状態へ追いつく
+- 過去のセッションを選ぶと再生になる。スライダーか時系列グラフのクリックで時刻を選び、グラフを横に
+  ドラッグすると区間を拡大する。間引かれている場合は拡大した区間を細かく取り直す。
+  ダブルクリックか「全体表示」で元に戻る
+- XY 平面には、アンカー位置、軌跡 (古い点ほど青く、新しい点ほど赤い)、選択時刻の測距円 (アンカーとタグの
+  高さの差を除いた水平距離)、測位失敗の × を描く。アンカーから大きく外れた点は既定では表示範囲に含めない。
+  「軌跡に合わせて表示範囲を広げる」で含める
+- タグ側のカルマンフィルタの軌跡は、最小二乗の軌跡に紫の単色で重ねる。予測だけで進んだ点は白抜きにして
+  点線でつなぎ、フィルタを初期化した点には輪を付ける。現在位置のマーカーは最小二乗が円、フィルタが菱形である。
+  「XY 軌跡」の見出しにある「最小二乗」と「フィルタ」で、それぞれの軌跡とマーカーの表示を切り替える
+- サマリの「フィルタの効果」は、最小二乗の解とフィルタ後の位置を同じサイクルどうしで比べた指標
+  (散らばり RMS、1 周期ごとの跳び、50 mm を超える跳びの回数) と、その比 (フィルタ / 最小二乗) を出す。
+  ライブでは直近 5 / 10 / 30 秒から範囲を選び、再生では表示している範囲で計算する。指標の定義は
+  [doc/server-design.md](doc/server-design.md) の 8.4 にある。散らばりは静止している区間で見る
+- URL の `#tag=1` / `#session=12` で開く画面を指定できる
+
+### フィルタの効果を CLI で比べる
+
+`tools/filter_compare.py` は参照 API から測位結果を間引かずに取り、可視化ページと同じ指標を出す。
+範囲はセッションの最初のサイクルからの秒数で指定する。`--window` で区間ごとの表を出し、散らばりの小さい
+(静止していた) 区間を探してから、その範囲を `--from` / `--to` で指定して見る。
+
+```sh
+uv run python tools/filter_compare.py --server http://192.168.1.10:8000 --window 10
+uv run python tools/filter_compare.py 2738 --server http://192.168.1.10:8000 --from 260 --to 310
+```
+
+最小二乗の解が 200 mm を超えて跳んだサイクルと、そのときのフィルタの動きも列挙する (`--list-jump-mm` で変更、0 で出さない)。
+
+## 開発
+
+```sh
+uv run pytest          # テスト
+uv run ruff check .    # lint
+uv run ruff format .   # 整形
+uv run mypy src tools tests   # 型チェック
+npx markdownlint-cli2  # Markdown の lint
+
+# doc/ がファームウェア側リポジトリと一致しているかの確認
+uv run python tools/check_doc_sync.py ../m5atom_uwb_ds_twr
+```
+
+バージョン番号の単一の情報源は `pyproject.toml` の `[project]` にある `version` である。
+README 冒頭の記載と同じ値にする。運用方針は [AGENTS.md](AGENTS.md) の「バージョン管理」を参照。
+
+## License
+
+MIT License。詳細は [LICENSE](LICENSE) を参照。
+
+可視化ページに同梱している [uPlot](https://github.com/leeoniya/uPlot) (v1.6.32) も MIT License である
+([src/location_server/static/vendor/uplot/LICENSE](src/location_server/static/vendor/uplot/LICENSE))。
