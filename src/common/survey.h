@@ -65,6 +65,9 @@ static constexpr uint32_t SURVEY_RESPOND_MAX_MS = 3000;
 // 無かった場合も、指示自体は届いていて測距中かもしれないので、短めの時間だけ待つ。
 static constexpr uint32_t SURVEY_REPORT_TIMEOUT_MS       = 6000;
 static constexpr uint32_t SURVEY_REPORT_TIMEOUT_NOACK_MS = 1500;
+// 終了の通知 (SVE) を送り続ける時間。最後の組の応答側は、測距を終えても SURVEY_RESPOND_IDLE_MS の
+// あいだ応答ループに残り、その後も 100 ms 単位で受信を待つので、それより長く送る。
+static constexpr uint32_t SURVEY_END_MS = SURVEY_RESPOND_IDLE_MS + 300;
 // survey モードのアンカーが、survey の PAN のフレームをこの時間受けなければ通常の応答へ戻る。
 // コーディネータが途中で止まった (USB を抜いたなど) ときに、survey モードに残り続けないように
 // するため。
@@ -242,7 +245,16 @@ static void surveyAck(const SurveyFrame& request)
     surveySendRaw(surveySelf, request.src, request.seq, SURVEY_MSG_ACK, body, sizeof(body));
 }
 
-static bool surveyWaitAck(uint16_t from, char kind, uint8_t seq, uint32_t timeoutMs)
+// 要求 (from へ送った kind、シーケンス番号 seq) への応答を待つ。応答が 1 つ失われても先へ進めるよう、
+// 待っている間に届いた他のフレームは次のように扱う。
+// - 報告 (SVD) はコーディネータだけが受ける。どの待ちの最中でもすぐに応答し、報告の送り手が
+//   応答待ちで送り直し続けないようにする。前の組の報告の再送 (コーディネータの応答が失われた場合) も
+//   ここで止まる。待っている指示 (SVI) への報告なら、指示が届いた証拠なので応答が来たものとみなす
+// - 待っている相手から要求 (SVI / SVR / SVP / SVE) が届いたら、相手はこちらの要求を受けて次へ
+//   進んでいるので、応答が来たものとみなす
+// 応答が来たものとみなしたフレームは deferred に入れて返し、呼び出し元が処理する。deferred が
+// nullptr なら、そのようなフレームは捨てる (応答の行き違いが起きない要求で使う)。
+static bool surveyWaitAck(uint16_t from, char kind, uint8_t seq, uint32_t timeoutMs, SurveyFrame* deferred)
 {
     const uint32_t startMs = millis();
     while ((millis() - startMs) < timeoutMs) {
@@ -252,18 +264,36 @@ static bool surveyWaitAck(uint16_t from, char kind, uint8_t seq, uint32_t timeou
             (frame.body[0] == static_cast<uint8_t>(kind)) && (frame.body[1] == seq)) {
             return true;
         }
+        if (frame.kind == SURVEY_MSG_DATA) {
+            surveyAck(frame);
+            // 報告の本体の 3 バイト目は指示のシーケンス番号 (surveyEncodeReport())。
+            if ((deferred != nullptr) && (frame.src == from) && (kind == SURVEY_MSG_INIT) && (frame.bodyLen >= 3) &&
+                (frame.body[2] == seq)) {
+                *deferred = frame;
+                return true;
+            }
+            continue;
+        }
+        const bool request = (frame.kind == SURVEY_MSG_INIT) || (frame.kind == SURVEY_MSG_RESP) ||
+                             (frame.kind == SURVEY_MSG_PING) || (frame.kind == SURVEY_MSG_END);
+        if ((deferred != nullptr) && (frame.src == from) && request) {
+            *deferred = frame;
+            return true;
+        }
     }
     return false;
 }
 
 // 応答を求める要求を送り、応答が来るまで送り直す。seqOut には要求のシーケンス番号を返す。
-static bool surveyRequest(uint16_t dst, char kind, const uint8_t* body, size_t bodyLen, uint8_t* seqOut = nullptr)
+// deferred は surveyWaitAck() と同じで、応答が来たものとみなしたフレームが入る (kind が 0 以外になる)。
+static bool surveyRequest(uint16_t dst, char kind, const uint8_t* body, size_t bodyLen, uint8_t* seqOut = nullptr,
+                          SurveyFrame* deferred = nullptr)
 {
     const uint8_t seq = ++surveyTxSeq;
     if (seqOut != nullptr) *seqOut = seq;
     for (int i = 0; i < SURVEY_REQUEST_TRIES; ++i) {
         surveySendRaw(surveySelf, dst, seq, kind, body, bodyLen);
-        if (surveyWaitAck(dst, kind, seq, SURVEY_ACK_TIMEOUT_MS)) return true;
+        if (surveyWaitAck(dst, kind, seq, SURVEY_ACK_TIMEOUT_MS, deferred)) return true;
     }
     return false;
 }
@@ -380,7 +410,8 @@ static bool surveyDecodeReport(const SurveyFrame& frame, uint16_t initiator, Sur
 }
 
 // 測距の指示 (SVI) を受けた側の処理。相手と測距し、結果をコーディネータへ報告する。
-static void surveyHandleInit(const SurveyFrame& frame)
+// 報告への応答を待つ間にコーディネータから次の要求が届いたら、next に入れて返す。
+static void surveyHandleInit(const SurveyFrame& frame, SurveyFrame& next)
 {
     if (frame.bodyLen < 3) return;
 
@@ -406,34 +437,43 @@ static void surveyHandleInit(const SurveyFrame& frame)
                       static_cast<unsigned>(target), surveyStatusName(result.status),
                       static_cast<unsigned>(result.tries), static_cast<unsigned>(result.ok));
     }
-    surveyRequest(frame.src, SURVEY_MSG_DATA, surveyLastReport, surveyLastReportLen);
+    // 報告への応答が失われると、コーディネータは次の組へ進んで次の要求を送ってくる。それを捨てずに
+    // 受け取り、報告が届いた証拠とみなす。
+    surveyRequest(frame.src, SURVEY_MSG_DATA, surveyLastReport, surveyLastReportLen, nullptr, &next);
 }
 
 // 自機宛ての制御フレームを処理する。survey を終える (SVE を受けた) ときに false を返す。
 // コーディネータも、報告を待っている間に届いた要求をここで処理する。
-static bool surveyHandleFrame(const SurveyFrame& frame)
+static bool surveyHandleFrame(const SurveyFrame& first)
 {
-    switch (frame.kind) {
-        case SURVEY_MSG_PING:
-            surveyAck(frame);
-            return true;
-        case SURVEY_MSG_RESP: {
-            if (frame.bodyLen < 1) return true;
-            surveyAck(frame);
-            char detail[16];
-            snprintf(detail, sizeof(detail), "<-%u", static_cast<unsigned>(frame.src));
-            surveyShow(detail);
-            surveyRespond(frame.src, frame.body[0]);
-            return true;
+    SurveyFrame frame = first;
+    for (;;) {
+        SurveyFrame next;
+        switch (frame.kind) {
+            case SURVEY_MSG_PING:
+                surveyAck(frame);
+                return true;
+            case SURVEY_MSG_RESP: {
+                if (frame.bodyLen < 1) return true;
+                surveyAck(frame);
+                char detail[16];
+                snprintf(detail, sizeof(detail), "<-%u", static_cast<unsigned>(frame.src));
+                surveyShow(detail);
+                surveyRespond(frame.src, frame.body[0]);
+                return true;
+            }
+            case SURVEY_MSG_INIT:
+                surveyHandleInit(frame, next);
+                break;
+            case SURVEY_MSG_END:
+                return false;
+            default:
+                // 起床ビーコンの残りや、宛先が自機になっている応答の再送などは無視する。
+                return true;
         }
-        case SURVEY_MSG_INIT:
-            surveyHandleInit(frame);
-            return true;
-        case SURVEY_MSG_END:
-            return false;
-        default:
-            // 起床ビーコンの残りや、宛先が自機になっている応答の再送などは無視する。
-            return true;
+        // 報告への応答を待つ間に届いた次の要求を続けて処理する。
+        if (next.kind == 0) return true;
+        frame = next;
     }
 }
 
@@ -504,28 +544,43 @@ static void surveyCollectPair(uint16_t initiator, uint16_t target, uint8_t sampl
     uint8_t body[3];
     surveyPut16(&body[0], target);
     body[2] = samples;
-    uint8_t initSeq  = 0;
-    const bool acked = surveyRequest(initiator, SURVEY_MSG_INIT, body, sizeof(body), &initSeq);
+    uint8_t initSeq = 0;
+    // 指示への応答が失われても、initiator は測距を進めて SVR (自機が応答側の組) や報告を送ってくる。
+    // それらは応答の代わりとして受け取る (surveyWaitAck())。
+    SurveyFrame early;
+    const bool acked = surveyRequest(initiator, SURVEY_MSG_INIT, body, sizeof(body), &initSeq, &early);
 
     out           = SurveyPairResult();
     out.initiator = initiator;
     out.responder = target;
     out.status    = acked ? SurveyPairStatus::NoReport : SurveyPairStatus::NoAck;
 
+    // この指示への報告なら結果に入れる。前の組の報告の再送 (コーディネータの応答が失われた場合) は捨てる。
+    auto takeReport = [&](const SurveyFrame& frame) {
+        SurveyPairResult report;
+        uint8_t reportSeq = 0;
+        if (!surveyDecodeReport(frame, initiator, report, reportSeq)) return false;
+        if ((reportSeq != initSeq) || (report.responder != target)) return false;
+        out = report;
+        return true;
+    };
+
+    if (early.kind == SURVEY_MSG_DATA) {
+        // surveyWaitAck() が応答済み。
+        if (takeReport(early)) return;
+    } else if (early.kind != 0) {
+        surveyHandleFrame(early);
+    }
+
     const uint32_t timeoutMs = acked ? SURVEY_REPORT_TIMEOUT_MS : SURVEY_REPORT_TIMEOUT_NOACK_MS;
     const uint32_t startMs   = millis();
     while ((millis() - startMs) < timeoutMs) {
         SurveyFrame frame;
         if (!surveyReceive(frame, 100)) continue;
-        if ((frame.src == initiator) && (frame.kind == SURVEY_MSG_DATA)) {
-            SurveyPairResult report;
-            uint8_t reportSeq = 0;
-            if (!surveyDecodeReport(frame, initiator, report, reportSeq)) continue;
+        if (frame.kind == SURVEY_MSG_DATA) {
             surveyAck(frame);
-            // 前の組の報告の再送 (コーディネータの応答が失われた場合) は捨てる。
-            if ((reportSeq != initSeq) || (report.responder != target)) continue;
-            out = report;
-            return;
+            if ((frame.src == initiator) && takeReport(frame)) return;
+            continue;
         }
         // 自機が応答側の組では、initiator から応答ループへ入る要求 (SVR) が届く。
         surveyHandleFrame(frame);
@@ -587,9 +642,10 @@ static void surveyRunCoordinator(uint16_t selfId, const uint16_t* ids, size_t co
         }
     }
 
-    // 終了の通知は応答を求めないので、何度か繰り返す。受けそこねたアンカーも
-    // SURVEY_MEMBER_IDLE_MS で通常の応答へ戻る。
-    for (int i = 0; i < 10; ++i) {
+    // 終了の通知は応答を求めないので、最後の組の応答側が応答ループから戻るまで繰り返す
+    // (SURVEY_END_MS)。それでも受けそこねたアンカーは SURVEY_MEMBER_IDLE_MS で通常の応答へ戻る。
+    const uint32_t endStartMs = millis();
+    while ((millis() - endStartMs) < SURVEY_END_MS) {
         surveySendRaw(selfId, SURVEY_BROADCAST, ++surveyTxSeq, SURVEY_MSG_END, nullptr, 0);
         delay(SURVEY_WAKE_INTERVAL_MS);
     }
