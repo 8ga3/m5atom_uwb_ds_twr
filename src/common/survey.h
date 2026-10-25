@@ -450,8 +450,13 @@ static bool surveyHandleFrame(const SurveyFrame& first)
     for (;;) {
         SurveyFrame next;
         switch (frame.kind) {
+            case SURVEY_MSG_WAKE:
             case SURVEY_MSG_PING:
-                surveyAck(frame);
+                // 起床ビーコンと在否の確認は、コーディネータが survey を始めるときにだけ送る。コーディネータ
+                // だけが再起動して survey をやり直すと、シーケンス番号が 0 から振り直されるので、前回の
+                // 指示の記録が残っていると新しい指示を再送と取り違えて測距を省いてしまう。ここで捨てる。
+                surveyLastInitValid = false;
+                if (frame.kind == SURVEY_MSG_PING) surveyAck(frame);
                 return true;
             case SURVEY_MSG_RESP: {
                 if (frame.bodyLen < 1) return true;
@@ -468,7 +473,7 @@ static bool surveyHandleFrame(const SurveyFrame& first)
             case SURVEY_MSG_END:
                 return false;
             default:
-                // 起床ビーコンの残りや、宛先が自機になっている応答の再送などは無視する。
+                // 宛先が自機になっている応答の再送などは無視する。
                 return true;
         }
         // 報告への応答を待つ間に届いた次の要求を続けて処理する。
