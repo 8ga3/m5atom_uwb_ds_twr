@@ -502,7 +502,13 @@ static void surveyRunMember(uint16_t selfId)
     bool ended = false;
     while (!ended && ((millis() - surveyLastFrameMs) < SURVEY_MEMBER_IDLE_MS)) {
         SurveyFrame frame;
-        if (!surveyReceive(frame, 100)) continue;
+        if (!surveyReceive(frame, 100)) {
+            // survey 中は loop() に戻らないので、Atom Matrix の ID の桁の切り替えをここで進める。
+            // 消灯の桁の途中で survey に入ると、呼ばない限り消えたままになる。LED の書き込みには約 1 ms
+            // かかるので、要求に応える処理の途中ではなく、何も受けなかったときだけ呼ぶ。
+            serviceLed();
+            continue;
+        }
         ended = !surveyHandleFrame(frame);
     }
     Serial.printf("SURVEY_MEMBER,state=exit,reason=%s\n", ended ? "end" : "idle");
@@ -513,6 +519,7 @@ static void surveyWake(uint32_t durationMs)
     const uint32_t startMs = millis();
     while ((millis() - startMs) < durationMs) {
         surveySendRaw(SURVEY_WAKE_SRC, SURVEY_BROADCAST, SURVEY_WAKE_SEQ, SURVEY_MSG_WAKE, nullptr, 0);
+        serviceLed();  // surveyRunMember() と同じ理由。ビーコンの間隔は 10 ms あり、応答を待つ相手もいない
         delay(SURVEY_WAKE_INTERVAL_MS);
     }
 }
@@ -587,7 +594,10 @@ static void surveyCollectPair(uint16_t initiator, uint16_t target, uint8_t sampl
     const uint32_t startMs   = millis();
     while ((millis() - startMs) < timeoutMs) {
         SurveyFrame frame;
-        if (!surveyReceive(frame, 100)) continue;
+        if (!surveyReceive(frame, 100)) {
+            serviceLed();  // surveyRunMember() と同じ理由
+            continue;
+        }
         if (frame.kind == SURVEY_MSG_DATA) {
             surveyAck(frame);
             if ((frame.src == initiator) && takeReport(frame)) return;
@@ -636,9 +646,9 @@ static void surveyRunCoordinator(uint16_t selfId, const uint16_t* ids, size_t co
         for (size_t b = 0; b < count; ++b) {
             if ((a == b) || !present[a] || !present[b]) continue;
 
+            // ID は 5 桁 (65534) まであり、"65534>65534" と終端で 12 バイトに収まる。
             char detail[16];
-            snprintf(detail, sizeof(detail), "%u>%u", static_cast<unsigned>(ids[a] & 0xFFF),
-                     static_cast<unsigned>(ids[b] & 0xFFF));
+            snprintf(detail, sizeof(detail), "%u>%u", static_cast<unsigned>(ids[a]), static_cast<unsigned>(ids[b]));
             surveyShow(detail);
 
             SurveyPairResult result;
