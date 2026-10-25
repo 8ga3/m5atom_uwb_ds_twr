@@ -1,0 +1,4 @@
+{
+  "globs": ["doc/*.md", "README.md", "AGENTS.md", "server/README.md", "server/AGENTS.md"],
+  "ignores": [".pio/**", "server/.venv/**", "**/node_modules/**"]
+}

@@ -1,24 +1,21 @@
-# location_server_uwb
+# uwb-trilattice の測位サーバー
 
 UWB 測位のデバッグ・精度評価に使うサーバーである。アンカーの ID と設置座標を保持してタグへ配信し、
 タグから送られてくる測距結果と自己位置推定結果を蓄積して可視化する。
 
 バージョン: `0.1.0-dev`
 
-設計の正本は [doc/server-design.md](doc/server-design.md) である。実装と文書が食い違う変更は行わない。
+設計の正本は [doc/server-design.md](../doc/server-design.md) である。実装と文書が食い違う変更は行わない。
 
-`doc/` 以下の設計メモは、タグ側 (ファームウェア) の
-[m5atom_uwb_ds_twr](https://github.com/8ga3/m5atom_uwb_ds_twr) リポジトリと同じ内容を保つ。
-片方だけを書き換えない。
+設計メモはリポジトリのルートの `doc/` に集約し、サーバー側には複製しない。
 
-- [doc/server-design.md](doc/server-design.md) - 測位サーバーの設計メモ (本リポジトリの正本)
-- [doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) -
+- [doc/server-design.md](../doc/server-design.md) - 測位サーバーの設計メモ
+- [doc/multi-anchor-positioning-design.md](../doc/multi-anchor-positioning-design.md) -
   マルチアンカー UWB 測位システムの設計メモ
-- [doc/downlink-tdoa-design.md](doc/downlink-tdoa-design.md) - Downlink-TDoA 方式の設計メモ
+- [doc/downlink-tdoa-design.md](../doc/downlink-tdoa-design.md) - Downlink-TDoA 方式の設計メモ
 
-後ろの 2 文書はタグ側 (ファームウェア) の設計であり、本リポジトリの実装対象ではない。
-サーバーの設計判断がタグ側の前提に依存するため、参照できるように置いている。
-文中の `../src/` へのリンクはファームウェア側のソースを指すので、本リポジトリでは解決しない。
+後ろの 2 文書はファームウェア側の設計であり、サーバーの設計判断もその前提に依存する。
+文中の `../src/` へのリンクはリポジトリ直下のファームウェアを指す。
 
 ## 実装状況
 
@@ -32,7 +29,7 @@ UWB 測位のデバッグ・精度評価に使うサーバーである。アン�
 | D | self-survey 連携 | アンカーの一括置換 API (`POST /api/v1/anchors:bulk`) と座標推定 CLI (`tools/survey_solve.py`) を実装済み。実機の survey の結果での投入は未実施 |
 
 フェーズ A の「タグ側の Wi-Fi 取得 + NVS キャッシュ」と、フェーズ B の「タグ側のリングバッファと UDP 送信」
-「測距ループと Wi-Fi 監視のコア分離」はファームウェア側の作業であり、このリポジトリには含まれない。
+「測距ループと Wi-Fi 監視のコア分離」は、リポジトリ直下のファームウェアで実装している。
 
 ## 必要なもの
 
@@ -40,6 +37,13 @@ UWB 測位のデバッグ・精度評価に使うサーバーである。アン�
 - [uv](https://docs.astral.sh/uv/)
 
 ## セットアップ
+
+以下のコマンドはすべて `server/` を起点として実行する。
+リポジトリのルートからは、まず次のように移動する。
+
+```sh
+cd server
+```
 
 ```sh
 uv sync
@@ -147,7 +151,7 @@ uv run python tools/anchor_cli.py config
 
 `tools/survey_solve.py` は、アンカーどうしの相互測距のログから座標を推定し、`apply` に渡せる座標表を書き出す。
 サーバーには接続せず、追加の依存もない。手順の詳細は
-[doc/multi-anchor-positioning-design.md](doc/multi-anchor-positioning-design.md) の 4 章を参照。
+[doc/multi-anchor-positioning-design.md](../doc/multi-anchor-positioning-design.md) の 4 章を参照。
 
 1. PC につないだアンカーのシリアルモニタで `survey 256 257 258 259` (アンカー ID を 10 進で並べる) を送り、
    出力をファイルに保存する (ファームウェア側の README を参照)
@@ -217,7 +221,7 @@ uv run python tools/dump_udp.py send --host 127.0.0.1 --port 47100 --cycles 40
 - サマリの「フィルタの効果」は、最小二乗の解とフィルタ後の位置を同じサイクルどうしで比べた指標
   (散らばり RMS、1 周期ごとの跳び、50 mm を超える跳びの回数) と、その比 (フィルタ / 最小二乗) を出す。
   ライブでは直近 5 / 10 / 30 秒から範囲を選び、再生では表示している範囲で計算する。指標の定義は
-  [doc/server-design.md](doc/server-design.md) の 8.4 にある。散らばりは静止している区間で見る
+  [doc/server-design.md](../doc/server-design.md) の 8.4 にある。散らばりは静止している区間で見る
 - URL の `#tag=1` / `#session=12` で開く画面を指定できる
 
 ### フィルタの効果を CLI で比べる
@@ -240,10 +244,13 @@ uv run pytest          # テスト
 uv run ruff check .    # lint
 uv run ruff format .   # 整形
 uv run mypy src tools tests   # 型チェック
-npx markdownlint-cli2  # Markdown の lint
+```
 
-# doc/ がファームウェア側リポジトリと一致しているかの確認
-uv run python tools/check_doc_sync.py ../m5atom_uwb_ds_twr
+Markdown の lint は、リポジトリのルートへ戻って実行する。
+
+```sh
+cd ..
+npx markdownlint-cli2
 ```
 
 バージョン番号の単一の情報源は `pyproject.toml` の `[project]` にある `version` である。

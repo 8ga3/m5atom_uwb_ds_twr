@@ -1,5 +1,8 @@
 # AGENTS.md
 
+この文書は `server/` 以下の開発規約である。共通規約は [../AGENTS.md](../AGENTS.md) に従う。
+以下でプロジェクト内のファイルやコマンドを示す場合は、特記しない限り `server/` を起点とする。
+
 ## 文章の書き方
 
 **ドキュメント (`doc/*.md`、README など) とソースコード中のコメントは、すべて通常の日本語で書く。**
@@ -21,11 +24,11 @@
 - README.md 冒頭の記載バージョンは `pyproject.toml` の値と一致させる。バージョンを変更するときは同じ
   コミットで両方を更新する。`tests/test_version.py` がこの一致を検証する
 - 初期バージョンは `0.1.0-dev`
-- リリース (`-dev` サフィックスを外す) するコミットには `vMAJOR.MINOR.PATCH` の git tag を打つ
+- リリース (`-dev` サフィックスを外す) するコミットには `server-vMAJOR.MINOR.PATCH` の git tag を打つ
 - 最初のリリースまでは `main` ブランチで直接開発する (現状)。最初のリリース以降は `develop` ブランチで開発し、
-  バージョンは次にリリース予定のバージョンに `-dev` を付けたものにする (例: `v0.1.0` リリース後、次が `0.2.0`
+  バージョンは次にリリース予定のバージョンに `-dev` を付けたものにする (例: `server-v0.1.0` リリース後、次が `0.2.0`
   予定なら `0.2.0-dev`)
-- リリース手順: `develop` の変更を `main` にマージ → バージョンから `-dev` を外す → `vMAJOR.MINOR.PATCH` の tag
+- リリース手順: `develop` の変更を `main` にマージ → バージョンから `-dev` を外す → `server-vMAJOR.MINOR.PATCH` の tag
   を打つ → `develop` 側のバージョンを次の開発バージョン (`{次のバージョン}-dev`) に上げる
 
 なお `0.1.0-dev` は PEP 440 では `0.1.0.dev0` に正規化される。実行時に `importlib.metadata` が返す値と
@@ -34,27 +37,18 @@
 
 ## ライセンス
 
-MIT License とする。ファームウェア側リポジトリと同じ著作権表示を使い、`LICENSE` の内容を揃えておく。
+MIT License とする。配布物に含めるため `server/LICENSE` を残し、ルートの `LICENSE` と内容を揃えておく。
 
 ## 設計の基準
 
-開発は [`doc/server-design.md`](doc/server-design.md) に準ずる。同文書を本リポジトリの設計上の正本として扱い、
+開発は [`doc/server-design.md`](../doc/server-design.md) に準ずる。同文書をサーバーの設計上の正本として扱い、
 実装と文書が食い違う変更を行わない。
 
-`doc/` 以下の 3 つの設計メモ (`server-design.md`、`multi-anchor-positioning-design.md`、
-`downlink-tdoa-design.md`) と `doc/images/` は、タグ側 (ファームウェア) の `m5atom_uwb_ds_twr` リポジトリと
-同一の内容を保つ。
+設計文書はリポジトリのルートの `doc/` に集約する。`server/` 以下に文書を複製しない。
+`multi-anchor-positioning-design.md` と `downlink-tdoa-design.md` はファームウェア側の設計だが、
+サーバーの設計判断もその前提に依存する。
 
-- どちらか一方の文書だけを書き換えない。変更するときは両リポジトリへ同じ内容を入れる
-- 文書への変更を含む作業では、作業の最後に `uv run python tools/check_doc_sync.py ../m5atom_uwb_ds_twr` で
-  一致を確認する
-- `multi-anchor-positioning-design.md` と `downlink-tdoa-design.md` はタグ側の設計であり、
-  本リポジトリの実装対象ではない。サーバーの設計判断がタグ側の前提に依存するため参照用に置いている
-- 文中の `../src/` へのリンクはファームウェア側のソースを指す。本リポジトリでは解決しないが、
-  両者を同一に保つため書き換えない
-- `tools/check_doc_sync.py` 自体も両リポジトリで同一に保つ
-
-- 設計変更が必要な場合は、実装だけを先行させず `doc/server-design.md` も同じ変更で更新する
+- 設計変更が必要な場合は、実装だけを先行させず `../doc/server-design.md` も同じ変更で更新する
 - 未決事項を独断で確定しない。実装に判断が必要な場合は確認を取るか、設計文書へ決定理由を追記する
 - 実装ロードマップのフェーズと依存関係を尊重する。後続フェーズの都合で前段の責務を崩さない
 - デバッグ・精度評価用の単一プロセスサーバーであり、運用系の高可用性を初版の要件に持ち込まない
@@ -82,7 +76,7 @@ MIT License とする。ファームウェア側リポジトリと同じ著作�
 - アンカー ID は UWB の responder address そのものとし、別の通し番号を設けない
 - タグの 1 回の起動を `(tag_id, boot_id)` で識別する 1 セッションとして扱う
 - `seq` の欠番による UDP パケット欠測と、`status != 0` の測距失敗を区別して記録・表示する
-- UDP パケットは `doc/server-design.md` のバイナリ形式に厳密に従い、magic、version、長さ、各値の範囲を
+- UDP パケットは `../doc/server-design.md` のバイナリ形式に厳密に従い、magic、version、長さ、各値の範囲を
   DB 書き込み前に検証する
 - UDP には ACK、再送、順序保証、ハンドシェイクを追加しない。遅延した過去データより最新データを優先する
 - 遅い WebSocket クライアントのキューとライブ用リングバッファには上限を設け、溢れた場合は古いデータから
@@ -116,7 +110,8 @@ MIT License とする。ファームウェア側リポジトリと同じ著作�
 
 ## Markdown
 
-`doc/*.md`、README、および本ファイルは markdownlint を通す。
+ルートの設計文書、README、および本ファイルは markdownlint を通す。
+リポジトリのルートで `npx markdownlint-cli2` を実行する。
 
 - 見出しの代わりに太字 (`**...**`) だけの行を置かない (MD036)
 - 1 行は 120 文字までとする。コードブロックとテーブルは対象外とする

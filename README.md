@@ -1,4 +1,30 @@
-# m5atom_uwb_ds_twr
+# uwb-trilattice
+
+M5Atom + M5Stamp-UWB を使う UWB 測位システムであり、ファームウェアと測位サーバーを一つのリポジトリで管理する。
+現在は DS-TWR に対応している。DL-TDoA は設計・検討段階であり、方式の選択をビルド時と実行時のどちらで行うかは
+まだ決めていない。
+
+## リポジトリ構成
+
+| パス | 内容 |
+| --- | --- |
+| `platformio.ini`、`src/` | ファームウェア。VS Code ではリポジトリのルートを開き、pioarduino を使う |
+| [server/](server/) | 測位サーバー。Python の依存関係、テスト、バージョンを独立して管理する |
+| [doc/](doc/) | 両者で共有する設計文書。ここだけを正本とし、複製は置かない |
+| `tools/` | ファームウェアの開発・検証ツール |
+
+サーバーのセットアップ・起動・テストは [server/README.md](server/README.md) を参照。
+サーバー関連のコマンドは `server/` に移動して実行する。
+設計メモにあるサーバーの `tools/...` も `server/` を起点とする。
+
+旧 `m5atom_uwb_ds_twr` と `location_server_uwb` の `main` の履歴を統合している。
+履歴を取り込むために Git subtree を使ったが、今後は通常のモノレポとして開発し、旧リポジトリとの同期は行わない。
+設計メモに残る旧リポジトリ名や Issue の URL は、統合前の参照として読む。
+旧作業ディレクトリの仮想環境や、Git 管理外の実験用 DB・座標表・ログは取り込んでいない。
+必要な実験データは旧ディレクトリに残したまま、サーバーの実行時に明示的にパスを指定するか、
+`server/` 内の適切な場所へ別途コピーする。
+
+## ファームウェア
 
 M5Stamp-UWB (QM33120) を搭載した M5Atom シリーズで、DS-TWR (Double-Sided Two-Way Ranging) による UWB 測距を行うファームウェア。
 TAG (測距を要求する側) と ANCHOR (応答する側) の 2 つの役割を、共通コードを共有しつつ 1 つのリポジトリにまとめている。
@@ -47,7 +73,7 @@ ID 設定と同じく、起動ボタンを押しながら電源を入れたと�
 
 ### 4. 測位サーバーの設定 (TAG のみ)
 
-Wi-Fi 設定に続けて、測位サーバー ([location_server_uwb](https://github.com/8ga3/location_server_uwb)) の宛先を入力する。
+Wi-Fi 設定に続けて、[測位サーバー](server/README.md) の宛先を入力する。
 
 - `srv_host` にはサーバーの IPv4 アドレスを入力する。名前解決は行わないので、ホスト名は受け付けない。
 - `srv_port` はピリオド 1 文字 (`.`) で既定値 (`8000`) を選べる。
@@ -60,7 +86,7 @@ TAG は起動時に `GET /api/v1/config` を 1 回呼び、巡回するアンカ
 - 取得した構成は NVS に保存する。次回以降の起動ではキャッシュの `rev` を `If-None-Match` で送るため、変更が無ければサーバーは `304` を返す。
 - サーバーへ届かないときはキャッシュで動作する。キャッシュも無い場合は巡回先が決まらないため測距を開始せず、LED を赤 (画面付きでは `CFG:NONE`) にして 10 秒ごとに取得をやり直す。
 - キャッシュにはどのサーバーから取得したかを一緒に記録する。宛先を別のサーバーへ変更した場合、前のサーバーの構成は使わずに取得をやり直す。
-- アンカーの座標はサーバー側の CLI (`tools/anchor_cli.py`) または管理 API で登録する。
+- アンカーの座標はサーバー側の CLI (`server/tools/anchor_cli.py`) または管理 API で登録する。
 - 構成を取得したあとに `POST /api/v1/hello` を 1 回呼び、起動ごとの乱数 `boot_id` とファームウェアバージョンをサーバーへ通知する。失敗しても測距は続ける。
 
 ### 6. テレメトリの送信 (TAG のみ)
@@ -77,7 +103,7 @@ TAG は起動時に `GET /api/v1/config` を 1 回呼び、巡回するアンカ
   フィルタ後の位置を別々に入れる。解けなかった (無効な) ほうは「測位なし」で送る。測距レコードには、
   その測距をフィルタが取り込んだか棄却したかも入れる。パケット形式は測距ごとのフィルタの扱いを足したときに
   version 3 へ上げたので、サーバーも同時に更新する。
-- 受信側の確認にはサーバー側の `tools/dump_udp.py listen` が使える。
+- 受信側の確認にはサーバー側の `server/tools/dump_udp.py listen` が使える。
 
 ### 7. 測距の周期 (TAG のみ)
 
@@ -171,7 +197,7 @@ USB でつなぐのは 1 台だけでよく、他のアンカーは電源を入�
 4. 送ったアンカーがコーディネータになり、他のアンカーを survey モードに入れる (LED が青になる)。
    全ての順序付きの組を測り終えると `SURVEY_END` が出て、各アンカーは通常の応答に戻る。
    4 台なら 12 組になる。1 組あたり 1 秒程度の見込みで、実機ではまだ測っていない
-5. 保存したログを location_server_uwb の `tools/survey_solve.py` に渡して座標を推定する
+5. 保存したログを `server/tools/survey_solve.py` に渡して座標を推定する
 
 組ごとの結果は `SURVEY_PAIR,i=0x0100,j=0x0101,status=OK,try=20,ok=20,median_mm=...,mm=...` の形で出る。
 `status` が `OK` 以外の組は測距できなかった組で、理由が `error=` に付く。
@@ -204,12 +230,11 @@ Atom Matrix は同じ色で、5x5 の LED アレイに自機の ID (TAG ID ま�
 - [doc/downlink-tdoa-design.md](doc/downlink-tdoa-design.md) - Downlink-TDoA 方式の設計メモ
 - [doc/server-design.md](doc/server-design.md) - 測位サーバーの設計メモ
 
-`doc/` 以下の設計メモは、サーバー実装側の
-[location_server_uwb](https://github.com/8ga3/location_server_uwb) リポジトリと同じ内容を保つ。
-片方だけを書き換えない。一致しているかは次のコマンドで確認できる。
+設計文書はこのリポジトリの `doc/` に集約している。変更時は対応する実装と同じ変更に含める。
+Markdown の検証はリポジトリのルートで実行する。
 
 ```sh
-python tools/check_doc_sync.py ../location_server_uwb
+npx markdownlint-cli2
 ```
 
 ## License
